@@ -29,3 +29,7 @@ build/astra_htsim/build/
 
 # runs
 runs
+
+# Panel-scale experiment generated files
+experiments/panel_scale/generated/
+experiments/panel_scale/results/
