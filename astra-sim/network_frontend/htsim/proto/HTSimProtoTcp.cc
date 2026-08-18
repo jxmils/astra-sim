@@ -73,6 +73,10 @@ HTSimProtoTcp::HTSimProtoTcp(const HTSim::tm_info* const tm, int argc, char** ar
             no_of_nodes = atoi(argv[i+1]);
             std::cout << "no_of_nodes "<<no_of_nodes << std::endl;
             i++;
+        } else if (!strcmp(argv[i],"-q")){
+            queuesize_pkts = atoi(argv[i+1]);
+            std::cout << "queuesize_pkts " << queuesize_pkts << std::endl;
+            i++;
         } else if (!strcmp(argv[i], "-topo")) {
             topo_file = argv[i + 1];
             cout << "FatTree topology input file: " << topo_file << endl;
@@ -139,8 +143,8 @@ HTSimProtoTcp::HTSimProtoTcp(const HTSim::tm_info* const tm, int argc, char** ar
 
 if (topo_file) {
 
-    FatTreeTopology* top_ = FatTreeTopology::load(topo_file, qlf.get(), eventlist, memFromPkt(8),
-    RANDOM, FAIR_PRIO);
+    FatTreeTopology* top_ = FatTreeTopology::load(topo_file, qlf.get(), eventlist,
+    memFromPkt(queuesize_pkts), RANDOM, FAIR_PRIO);
     top = std::unique_ptr<FatTreeTopology>(top_);
 
     if (top->no_of_nodes() != no_of_nodes) {
@@ -149,7 +153,7 @@ if (topo_file) {
         exit(1);
     }
 } else {
-        top = std::make_unique<FatTreeTopology>(no_of_nodes, linkspeed, memFromPkt(8), qlf.get(), &eventlist,ff,RANDOM,0);
+        top = std::make_unique<FatTreeTopology>(no_of_nodes, linkspeed, memFromPkt(queuesize_pkts), qlf.get(), &eventlist,ff,RANDOM,0);
     }
 #endif
 

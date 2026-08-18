@@ -59,6 +59,9 @@ class HTSimProtoTcp final : public HTSimSession::HTSimSessionImpl {
         int* is_dest;
 
         char* topo_file = NULL;
+        // Switch queue depth in packets. Settable via `-q <pkts>` in --htsim_opts.
+        // Default 8 preserves historical behaviour; see BDP note in HTSimProtoTcp.cc.
+        uint32_t queuesize_pkts = 8;
 
         #ifdef FAT_TREE
         std::unique_ptr<FatTreeTopology> top;
