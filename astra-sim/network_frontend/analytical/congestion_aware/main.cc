@@ -10,6 +10,7 @@ LICENSE file in the root directory of this source tree.
 #include <astra-network-analytical/common/NetworkParser.h>
 #include <astra-network-analytical/congestion_aware/Helper.h>
 #include <remote_memory_backend/analytical/AnalyticalRemoteMemory.hh>
+#include <iostream>
 
 using namespace AstraSim;
 using namespace Analytical;
@@ -97,6 +98,8 @@ int main(int argc, char* argv[]) {
     while (!event_queue->finished()) {
         event_queue->proceed();
     }
+
+    topology->print_link_metrics(std::cout);
 
     // terminate simulation
     AstraSim::LoggerFactory::shutdown();
