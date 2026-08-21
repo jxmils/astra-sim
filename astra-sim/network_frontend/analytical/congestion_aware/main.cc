@@ -99,9 +99,10 @@ int main(int argc, char* argv[]) {
         event_queue->proceed();
     }
 
+    // LoggerFactory uses an asynchronous worker. Drain it before emitting the
+    // machine-readable metrics so delayed log records cannot corrupt a row.
+    AstraSim::LoggerFactory::shutdown();
     topology->print_link_metrics(std::cout);
 
-    // terminate simulation
-    AstraSim::LoggerFactory::shutdown();
     return 0;
 }
