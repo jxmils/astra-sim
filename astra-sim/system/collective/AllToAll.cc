@@ -5,6 +5,8 @@ LICENSE file in the root directory of this source tree.
 
 #include "astra-sim/system/collective/AllToAll.hh"
 
+#include <cassert>
+
 using namespace AstraSim;
 
 AllToAll::AllToAll(ComType type,
@@ -13,10 +15,19 @@ AllToAll::AllToAll(ComType type,
                    RingTopology* allToAllTopology,
                    uint64_t data_size,
                    RingTopology::Direction direction,
-                   InjectionPolicy injection_policy)
+                   InjectionPolicy injection_policy,
+                   bool xor_destination_order)
     : Ring(type, id, allToAllTopology, data_size, direction, injection_policy) {
     this->name = Name::AllToAll;
     this->middle_point = nodes_in_ring - 1;
+    this->xor_destination_order = xor_destination_order;
+    this->destination_step = 1;
+    if (xor_destination_order) {
+        assert((nodes_in_ring & (nodes_in_ring - 1)) == 0 &&
+               "XOR all-to-all ordering requires a power-of-two node count");
+        curr_receiver = id ^ destination_step;
+        curr_sender = id ^ destination_step;
+    }
     if (window == -1) {
         parallel_reduce = nodes_in_ring - 1;
     } else {
@@ -64,18 +75,26 @@ void AllToAll::process_max_count() {
         release_packets();
         remained_packets_per_max_count = 1;
 
-        curr_receiver = ((RingTopology*)logical_topo)
-                            ->get_receiver(curr_receiver, direction);
-        if (curr_receiver == id) {
+        if (xor_destination_order) {
+            destination_step++;
+            if (destination_step < nodes_in_ring) {
+                curr_receiver = id ^ destination_step;
+                curr_sender = id ^ destination_step;
+            }
+        } else {
             curr_receiver = ((RingTopology*)logical_topo)
                                 ->get_receiver(curr_receiver, direction);
-        }
+            if (curr_receiver == id) {
+                curr_receiver = ((RingTopology*)logical_topo)
+                                    ->get_receiver(curr_receiver, direction);
+            }
 
-        curr_sender =
-            ((RingTopology*)logical_topo)->get_sender(curr_sender, direction);
-        if (curr_sender == id) {
             curr_sender = ((RingTopology*)logical_topo)
                               ->get_sender(curr_sender, direction);
+            if (curr_sender == id) {
+                curr_sender = ((RingTopology*)logical_topo)
+                                  ->get_sender(curr_sender, direction);
+            }
         }
     }
 }

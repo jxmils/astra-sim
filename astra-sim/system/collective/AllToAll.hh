@@ -20,11 +20,16 @@ class AllToAll : public Ring {
              RingTopology* allToAllTopology,
              uint64_t data_size,
              RingTopology::Direction direction,
-             InjectionPolicy injection_policy);
+             InjectionPolicy injection_policy,
+             bool xor_destination_order = false);
     void run(EventType event, CallData* data);
     void process_max_count();
     int get_non_zero_latency_packets();
     int middle_point;
+
+  private:
+    bool xor_destination_order;
+    int destination_step;
 };
 
 }  // namespace AstraSim

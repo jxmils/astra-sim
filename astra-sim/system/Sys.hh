@@ -316,6 +316,7 @@ class Sys : public Callable {
     std::vector<CollectiveImpl*> reduce_scatter_implementation_per_dimension;
     std::vector<CollectiveImpl*> all_gather_implementation_per_dimension;
     std::vector<CollectiveImpl*> all_to_all_implementation_per_dimension;
+    bool all_to_all_xor_destination_order;
     CollectiveOptimization collectiveOptimization;
     Tick last_scheduled_collective;
     bool break_dimension_done;

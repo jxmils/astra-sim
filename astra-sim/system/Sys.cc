@@ -189,6 +189,7 @@ Sys::Sys(int id,
     this->priority_counter = 0;
     this->pending_events = 0;
     this->preferred_dataset_splits = 0;
+    this->all_to_all_xor_destination_order = false;
 
     this->last_scheduled_collective = 0;
 
@@ -435,6 +436,16 @@ bool Sys::initialize_sys(string name) {
     }
     if (j.contains("active-chunks-per-dimension")) {
         active_chunks_per_dimension = j["active-chunks-per-dimension"];
+    }
+    if (j.contains("all-to-all-destination-order")) {
+        string destination_order = j["all-to-all-destination-order"];
+        if (destination_order == "offset") {
+            all_to_all_xor_destination_order = false;
+        } else if (destination_order == "xor") {
+            all_to_all_xor_destination_order = true;
+        } else {
+            sys_panic("all-to-all-destination-order must be offset or xor");
+        }
     }
     if (j.contains("L")) {
         inp_L = j["L"];
@@ -1056,7 +1067,8 @@ CollectivePhase Sys::generate_collective_phase(
                                         ((DirectCollectiveImpl*)collective_impl)
                                             ->direct_collective_window,
                                         id, (RingTopology*)topology, data_size,
-                                        direction, InjectionPolicy::Normal));
+                                        direction, InjectionPolicy::Normal,
+                                        all_to_all_xor_destination_order));
         return vn;
     } else if (collective_impl->type == CollectiveImplType::DoubleBinaryTree) {
         CollectivePhase vn(this, queue_id,
