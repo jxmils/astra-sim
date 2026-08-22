@@ -73,6 +73,11 @@ HTSimProtoTcp::HTSimProtoTcp(const HTSim::tm_info* const tm, int argc, char** ar
             no_of_nodes = atoi(argv[i+1]);
             std::cout << "no_of_nodes "<<no_of_nodes << std::endl;
             i++;
+        } else if (!strcmp(argv[i],"-seed")){
+            rng_seed = (unsigned)atoi(argv[i+1]);
+            i++;
+        } else if (!strcmp(argv[i],"-nocc")){
+            nocc = true;
         } else if (!strcmp(argv[i],"-q")){
             queuesize_pkts = atoi(argv[i+1]);
             std::cout << "queuesize_pkts " << queuesize_pkts << std::endl;
@@ -103,7 +108,13 @@ HTSimProtoTcp::HTSimProtoTcp(const HTSim::tm_info* const tm, int argc, char** ar
 
         i++;
     }
-    srand(time(NULL));
+    if (rng_seed == 0) {
+        rng_seed = (unsigned)time(NULL);
+    }
+    std::cout << "Using rng seed " << rng_seed << " (pass -seed " << rng_seed
+              << " to replay)" << std::endl;
+    std::cout << "Congestion control: " << (nocc ? "OFF (-nocc)" : "on") << std::endl;
+    srand(rng_seed);
 
     std::cout << "Using subflow count " << subflow_count << std::endl;
     std::cout << "requested nodes " << no_of_nodes << std::endl;
@@ -232,6 +243,13 @@ void HTSimProtoTcp::schedule_htsim_event(FlowInfo flow, int flow_id) {
         tcpSrc->_debug_dstid = dst;
         tcpSrc->astrasim_flow_finish_send_cb = &HTSimSession::flow_finish_send;
         tcpSrc->set_flowsize(msg_size);
+        if (nocc) {
+            // Full window from the first RTT: no slow start, and with no drops
+            // the AIMD path never executes. mss headroom covers rounding.
+            uint64_t win = (uint64_t)msg_size + 2 * Packet::data_packet_size();
+            tcpSrc->set_cwnd(win);
+            tcpSrc->set_ssthresh(win);
+        }
         tcpSnk = new TcpSink();
         tcpSnk->_debug_srcid = src;
         tcpSnk->_debug_dstid = dst;
@@ -351,6 +369,17 @@ void HTSimProtoTcp::run(const HTSim::tm_info* const tm) {
 }
 
 void HTSimProtoTcp::finish() {
+    std::cout << "Duplicate flow finishes ignored: "
+              << HTSimSession::duplicate_finish_count << std::endl;
+    std::cout << "Total TCP retransmissions: " << TcpSrc::_global_rtx_count
+              << std::endl;
+    if (nocc && TcpSrc::_global_rtx_count > 0) {
+        std::cerr << "ERROR: " << TcpSrc::_global_rtx_count
+                  << " retransmissions occurred under -nocc; results are not "
+                     "bandwidth-determined. Increase -q (switch queue depth) "
+                     "until this is zero." << std::endl;
+        exit(2);
+    }
 #if USE_FIRST_FIT
     delete ff
 #endif

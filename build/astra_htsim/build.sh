@@ -49,8 +49,16 @@ function setup() {
 }
 
 function patch_htsim() {
-  patch -p1 -d "${SCRIPT_DIR:?}"/../../extern/network_backend/csg-htsim \
-    --forward --reject-file=- -i "${SCRIPT_DIR:?}"/htsim_astrasim.patch && true
+  HTSIM_TCP_H="${SCRIPT_DIR:?}"/../../extern/network_backend/csg-htsim/sim/tcp.h
+if grep -q astrasim_flow_finish "${HTSIM_TCP_H:?}"; then
+    echo "csg-htsim already carries the ASTRA hooks (fork branch); skipping patch"
+else
+    # Loud failure: a silently-rejected patch used to surface later as an
+    # inscrutable link error on the missing astrasim_flow_finish_* members.
+    patch -p1 -d "${SCRIPT_DIR:?}"/../../extern/network_backend/csg-htsim \
+        --forward -i "${SCRIPT_DIR:?}"/htsim_astrasim.patch \
+        || { echo "ERROR: htsim_astrasim.patch failed to apply" >&2; exit 1; }
+fi
   ret=$?
   if [[ $ret -eq 0 ]]; then
     echo "HTSim patch applied successfully"

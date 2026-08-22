@@ -62,6 +62,14 @@ class HTSimProtoTcp final : public HTSimSession::HTSimSessionImpl {
         // Switch queue depth in packets. Settable via `-q <pkts>` in --htsim_opts.
         // Default 8 preserves historical behaviour; see BDP note in HTSimProtoTcp.cc.
         uint32_t queuesize_pkts = 8;
+        // RNG seed for path choice. Settable via `-seed <int>`; defaults to
+        // wall clock (old behaviour) but is always printed so runs can be replayed.
+        unsigned rng_seed = 0;
+        // `-nocc`: start every TcpSrc at full window (cwnd = ssthresh = flow
+        // size), so there is no slow start and, absent drops, congestion
+        // control never engages. FCT is then set by bandwidth, latency and
+        // queueing only. Loss under -nocc is a fatal error at finish().
+        bool nocc = false;
 
         #ifdef FAT_TREE
         std::unique_ptr<FatTreeTopology> top;

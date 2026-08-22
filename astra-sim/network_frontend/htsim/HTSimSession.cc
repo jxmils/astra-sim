@@ -12,6 +12,7 @@ std::map<std::pair<HTSim::MsgEventKey, int>, HTSim::MsgEvent>
 std::map<HTSim::MsgEventKey, HTSim::MsgEvent> HTSimSession::recv_waiting;
 std::map<HTSim::MsgEventKey, int> HTSimSession::msg_standby;
 std::map<int, int> HTSimSession::flow_id_to_tag;
+uint64_t HTSimSession::duplicate_finish_count = 0;
 HTSimSession* HTSimSession::session = nullptr;
 HTSimConf HTSimSession::conf;
 
@@ -137,10 +138,16 @@ void HTSimSession::notify_sender_sending_finished(int src_id,
     std::pair<MsgEventKey, int> send_event_key =
         make_pair(make_pair(tag, make_pair(src_id, dst_id)), flow_id);
     if (HTSimSession::send_waiting.find(send_event_key) == HTSimSession::send_waiting.end()) {
-        std::cerr << "Cannot find send_event in sent_hash. Something is wrong."
-             << "src_id, dst_id: " << src_id << " " << dst_id << " : " << tag << " - " << flow_id
-             << "\n";
-        assert(0 && "notify_sender_sending_finished failed");
+        // A retransmitted final packet can complete a flow twice; the first
+        // completion erased the event. Only reachable under packet loss (a
+        // -nocc run with adequate queues never retransmits), so tolerate it
+        // with a count rather than aborting -- an abort here races the
+        // loss-freedom check in HTSimProtoTcp::finish() and hides it.
+        HTSimSession::duplicate_finish_count++;
+        std::cerr << "Warning: duplicate flow-finish ignored (src " << src_id
+                  << " dst " << dst_id << " tag " << tag << " flow " << flow_id
+                  << ")\n";
+        return;
     }
 
     // Verify that the (HTSim identified) sent message size matches what was

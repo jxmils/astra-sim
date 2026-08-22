@@ -148,6 +148,9 @@ class HTSimSession {
         static std::map<HTSim::MsgEventKey, int> msg_standby;
 
         static std::map<int, int> flow_id_to_tag;
+    // flows whose finish callback fired after their event was already
+    // consumed (retransmitted final packet); only possible under loss
+    static uint64_t duplicate_finish_count;
 
         static void notify_receiver_receive_data(int src_id,
                                                  int dst_id,
