@@ -15,6 +15,7 @@
 #include "mtcp.h"
 #include "loggers.h"
 #include "fat_tree_topology.h"
+#include "panel_topology.h"
 
 namespace HTSim {
 
@@ -70,6 +71,21 @@ class HTSimProtoTcp final : public HTSimSession::HTSimSessionImpl {
         // control never engages. FCT is then set by bandwidth, latency and
         // queueing only. Loss under -nocc is a fatal error at finish().
         bool nocc = false;
+        // --- Panel mode: grid fabrics + switch planes with policy routing ---
+        // Selected by `-panel <mesh2d|torus2d|mesh3d|torus3d|hybrid|fullswitch>`
+        // in --htsim_opts. When null, behaviour is the stock fat-tree path.
+        PanelTopology* panel_top = NULL;
+        enum class PanelPolicy { Static, Adaptive, DirectPref };
+        PanelPolicy panel_policy = PanelPolicy::Adaptive;
+        double panel_link_gibps = 200.0;      // GiB/s, analytical convention
+        double panel_plane_gibps = 200.0;
+        simtime_picosec panel_latency = 0;    // set at parse (default 1000 ns)
+        simtime_picosec panel_plane_latency = 0;
+        int panel_planes = 0;
+        std::string panel_kind;
+        double direct_preference_factor = 1.10;
+        // telemetry: (is_plane, hops) -> {messages, payload_bytes}
+        std::map<std::pair<int,int>, std::pair<uint64_t,uint64_t>> route_telemetry;
 
         #ifdef FAT_TREE
         std::unique_ptr<FatTreeTopology> top;
