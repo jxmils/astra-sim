@@ -73,6 +73,31 @@ HTSimProtoTcp::HTSimProtoTcp(const HTSim::tm_info* const tm, int argc, char** ar
             no_of_nodes = atoi(argv[i+1]);
             std::cout << "no_of_nodes "<<no_of_nodes << std::endl;
             i++;
+        } else if (!strcmp(argv[i],"-panel")){
+            panel_kind = argv[i+1];
+            i++;
+        } else if (!strcmp(argv[i],"-extent")){
+            // consumed via -nodes; retained for symmetry/clarity
+            i++;
+        } else if (!strcmp(argv[i],"-planes")){
+            panel_planes = atoi(argv[i+1]);
+            i++;
+        } else if (!strcmp(argv[i],"-linkGiBps")){
+            panel_link_gibps = atof(argv[i+1]);
+            panel_plane_gibps = atof(argv[i+1]);
+            i++;
+        } else if (!strcmp(argv[i],"-planeGiBps")){
+            panel_plane_gibps = atof(argv[i+1]);
+            i++;
+        } else if (!strcmp(argv[i],"-latencyNs")){
+            panel_latency = timeFromNs(atof(argv[i+1]));
+            panel_plane_latency = panel_latency;
+            i++;
+        } else if (!strcmp(argv[i],"-policy")){
+            if (!strcmp(argv[i+1],"static")) panel_policy = PanelPolicy::Static;
+            else if (!strcmp(argv[i+1],"directpref")) panel_policy = PanelPolicy::DirectPref;
+            else panel_policy = PanelPolicy::Adaptive;
+            i++;
         } else if (!strcmp(argv[i],"-seed")){
             rng_seed = (unsigned)atoi(argv[i+1]);
             i++;
@@ -152,7 +177,26 @@ HTSimProtoTcp::HTSimProtoTcp(const HTSim::tm_info* const tm, int argc, char** ar
 
 #ifdef FAT_TREE
 
-if (topo_file) {
+if (!panel_kind.empty()) {
+    if (panel_latency == 0) { panel_latency = timeFromNs(1000.0); panel_plane_latency = panel_latency; }
+    PanelTopology::Base b;
+    if (panel_kind == "mesh2d") { b = PanelTopology::Base::Mesh2D; }
+    else if (panel_kind == "torus2d") { b = PanelTopology::Base::Torus2D; }
+    else if (panel_kind == "mesh3d") { b = PanelTopology::Base::Mesh3D; }
+    else if (panel_kind == "torus3d") { b = PanelTopology::Base::Torus3D; }
+    else if (panel_kind == "hybrid") { b = PanelTopology::Base::Torus2D; if (panel_planes == 0) panel_planes = 2; }
+    else if (panel_kind == "fullswitch") { b = PanelTopology::Base::None; if (panel_planes == 0) panel_planes = 6; }
+    else { std::cerr << "Unknown -panel kind " << panel_kind << std::endl; exit(1); }
+    panel_top = new PanelTopology(no_of_nodes, b, panel_planes,
+                                  panel_link_gibps, panel_latency,
+                                  panel_plane_gibps, panel_plane_latency,
+                                  memFromPkt(queuesize_pkts), logfile.get(), &eventlist);
+    std::cout << "Panel topology: " << panel_kind << " nodes " << no_of_nodes
+              << " planes " << panel_planes << " linkGiBps " << panel_link_gibps
+              << " policy " << (panel_policy == PanelPolicy::Static ? "static" :
+                 panel_policy == PanelPolicy::DirectPref ? "directpref" : "adaptive")
+              << std::endl;
+} else if (topo_file) {
 
     FatTreeTopology* top_ = FatTreeTopology::load(topo_file, qlf.get(), eventlist,
     memFromPkt(queuesize_pkts), RANDOM, FAIR_PRIO);
@@ -188,7 +232,11 @@ if (topo_file) {
 #ifdef VL2
     top = std::make_unique<VL2Topology>(logfile.get(),&eventlist,ff);
 #endif
-    no_of_nodes = top->no_of_nodes();
+    if (panel_top) {
+        no_of_nodes = panel_top->no_of_nodes();
+    } else {
+        no_of_nodes = top->no_of_nodes();
+    }
     std::cout << "actual nodes " << no_of_nodes << std::endl;
 
     net_paths = new vector<const Route*>**[no_of_nodes];
@@ -205,6 +253,58 @@ if (topo_file) {
         ff->net_paths = net_paths;
 }
 
+// Select among panel route candidates per the routing policy, mirroring the
+// analytical Hybrid2D::route semantics: cost = sum(latency) + max over hops of
+// (reserved_bytes + s)/B; evaluation order direct -> preferred plane -> other
+// planes with strict-improvement, so ties favour direct then lower-preference;
+// reservations are placed on every hop of the chosen route at injection.
+static PanelTopology::Candidate* panel_route_select(
+        std::vector<PanelTopology::Candidate>* cands, uint64_t s,
+        uint32_t src, uint32_t dst, int nplanes, bool include_queue,
+        bool directpref, double pref_factor) {
+    auto cost_ns = [&](const PanelTopology::Candidate& cd) {
+        double lat_ns = (double)cd.latency_sum / 1000.0;
+        double ser_ns = 0.0;
+        for (size_t k = 0; k < cd.hop_queues.size(); k++) {
+            LedgerQueue* q = cd.hop_queues[k];
+            double Bpns = (double)q->link_bitrate() / 8.0 / 1e9;   // bytes per ns
+            double queued = include_queue ? (double)q->reserved_bytes() : 0.0;
+            double t = (queued + (double)s) / Bpns;
+            if (t > ser_ns) ser_ns = t;
+        }
+        return lat_ns + ser_ns;
+    };
+    // ordering: direct (if present) first, then preferred plane, then rest
+    std::vector<int> order;
+    int first_plane_idx = -1;
+    for (size_t i = 0; i < cands->size(); i++) {
+        if (!(*cands)[i].is_plane) order.push_back((int)i);
+        else if (first_plane_idx < 0) first_plane_idx = (int)i;
+    }
+    if (first_plane_idx >= 0 && nplanes > 0) {
+        int pref = (int)((src + dst) % (uint32_t)nplanes);
+        order.push_back(first_plane_idx + pref);
+        for (int p = 0; p < nplanes; p++)
+            if (p != pref) order.push_back(first_plane_idx + p);
+    }
+    int best = order[0];
+    double best_cost = cost_ns((*cands)[best]);
+    int best_plane = -1; double best_plane_cost = 0.0;
+    for (size_t oi = 1; oi < order.size(); oi++) {
+        double cst = cost_ns((*cands)[order[oi]]);
+        if ((*cands)[order[oi]].is_plane &&
+            (best_plane < 0 || cst < best_plane_cost)) {
+            best_plane = order[oi]; best_plane_cost = cst;
+        }
+        if (cst < best_cost) { best_cost = cst; best = order[oi]; }
+    }
+    if (directpref && !(*cands)[order[0]].is_plane && best_plane >= 0) {
+        double direct_cost = cost_ns((*cands)[order[0]]);
+        best = (direct_cost <= pref_factor * best_plane_cost) ? order[0] : best_plane;
+    }
+    return &(*cands)[best];
+}
+
 // Schedule_htsim_event creates a new connection and schedules it in HTSim.
 // Adapted from main connections loop
 void HTSimProtoTcp::schedule_htsim_event(FlowInfo flow, int flow_id) {
@@ -214,7 +314,20 @@ void HTSimProtoTcp::schedule_htsim_event(FlowInfo flow, int flow_id) {
     double start = eventlist.now();
     connID++;
 
-    if (!net_paths[src][dst]) {
+    std::vector<PanelTopology::Candidate>* panel_cands = NULL;
+    PanelTopology::Candidate* panel_choice = NULL;
+    if (panel_top) {
+        panel_cands = panel_top->get_candidates(src, dst);
+        panel_choice = panel_route_select(
+            panel_cands, msg_size, src, dst, panel_top->planes(),
+            panel_policy != PanelPolicy::Static,
+            panel_policy == PanelPolicy::DirectPref, direct_preference_factor);
+        for (size_t k = 0; k < panel_choice->hop_queues.size(); k++)
+            panel_choice->hop_queues[k]->reserve_bytes(msg_size);
+        auto key = std::make_pair(panel_choice->is_plane ? 1 : 0, panel_choice->hops);
+        route_telemetry[key].first += 1;
+        route_telemetry[key].second += msg_size;
+    } else if (!net_paths[src][dst]) {
         net_paths[src][dst] = top->get_paths(src,dst);
     }
 
@@ -231,7 +344,8 @@ void HTSimProtoTcp::schedule_htsim_event(FlowInfo flow, int flow_id) {
     tot_subs += crt_subflow_count;
     cnt_con++;
 
-    it_sub = crt_subflow_count > net_paths[src][dst]->size()?net_paths[src][dst]->size():crt_subflow_count;
+    it_sub = panel_top ? 1
+        : (crt_subflow_count > net_paths[src][dst]->size()?net_paths[src][dst]->size():crt_subflow_count);
 
 #ifdef MH_FAT_TREE
     int use_all = it_sub==net_paths[src][dst]->size();
@@ -265,7 +379,9 @@ void HTSimProtoTcp::schedule_htsim_event(FlowInfo flow, int flow_id) {
         size_t choice = 0;
 
 #ifdef FAT_TREE
-        choice = rand()%net_paths[src][dst]->size();
+        if (!panel_top) {  // panel guard: choice made by policy above
+            choice = rand()%net_paths[src][dst]->size();
+        }
 #endif
 
 #ifdef OV_FAT_TREE
@@ -307,7 +423,7 @@ void HTSimProtoTcp::schedule_htsim_event(FlowInfo flow, int flow_id) {
         } else
             choice = rand()%net_paths[src][dst]->size();
 #endif
-        if (choice>=net_paths[src][dst]->size()){
+        if (!panel_top && choice>=net_paths[src][dst]->size()){
             printf("Weird path choice %lu out of %lu\n",choice,net_paths[src][dst]->size());
             exit(1);
         }
@@ -317,7 +433,11 @@ void HTSimProtoTcp::schedule_htsim_event(FlowInfo flow, int flow_id) {
         print_path(paths,net_paths[src][dst]->at(choice));
 #endif
 
-        routeout = new Route(*(net_paths[src][dst]->at(choice)));
+        if (panel_top) {
+            routeout = new Route(*(panel_choice->route));
+        } else {
+            routeout = new Route(*(net_paths[src][dst]->at(choice)));
+        }
         routeout->push_back(tcpSnk);
 
         routein = new Route();
@@ -350,6 +470,13 @@ void HTSimProtoTcp::schedule_htsim_event(FlowInfo flow, int flow_id) {
 
         sinkLogger->monitorMultipathSink(tcpSnk);
     }
+    // panel candidate cleanup: candidate Route objects were copied into
+    // routeout; free the originals and the vector.
+    if (panel_cands) {
+        for (size_t k = 0; k < panel_cands->size(); k++)
+            delete (*panel_cands)[k].route;
+        delete panel_cands;
+    }
 }
 
 void HTSimProtoTcp::run(const HTSim::tm_info* const tm) {
@@ -369,6 +496,15 @@ void HTSimProtoTcp::run(const HTSim::tm_info* const tm) {
 }
 
 void HTSimProtoTcp::finish() {
+    for (std::map<std::pair<int,int>, std::pair<uint64_t,uint64_t>>::iterator it =
+             route_telemetry.begin(); it != route_telemetry.end(); ++it) {
+        std::cout << "NETWORK_ROUTE class=" << (it->first.first ? "switch" : "direct")
+                  << " hops=" << it->first.second
+                  << " messages=" << it->second.first
+                  << " payload_bytes=" << it->second.second
+                  << " byte_hops=" << it->second.second * (uint64_t)it->first.second
+                  << " propagation_ns=0 serialization_ns=0" << std::endl;
+    }
     std::cout << "Duplicate flow finishes ignored: "
               << HTSimSession::duplicate_finish_count << std::endl;
     std::cout << "Total TCP retransmissions: " << TcpSrc::_global_rtx_count

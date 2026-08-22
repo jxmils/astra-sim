@@ -32,6 +32,7 @@ set (HTSIM_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../../extern/network_backend/csg-h
 set(srcs_htsim_extern   ${HTSIM_DIR}/datacenter/connection_matrix.cpp
                         ${HTSIM_DIR}/datacenter/fat_tree_switch.cpp
                         ${HTSIM_DIR}/datacenter/fat_tree_topology.cpp
+                        ${HTSIM_DIR}/datacenter/panel_topology.cpp
                         ${HTSIM_DIR}/datacenter/firstfit.cpp
 )
 
