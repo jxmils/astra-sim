@@ -79,6 +79,14 @@ HTSimProtoTcp::HTSimProtoTcp(const HTSim::tm_info* const tm, int argc, char** ar
         } else if (!strcmp(argv[i],"-extent")){
             // consumed via -nodes; retained for symmetry/clarity
             i++;
+        } else if (!strcmp(argv[i],"-permute")){
+            if (!strcmp(argv[i+1],"qtp8")) {
+                static const int qtp8[8] = {0,1,4,5,7,2,3,6};
+                panel_perm.assign(qtp8, qtp8+8);
+            } else if (strcmp(argv[i+1],"identity")) {
+                std::cerr << "Unknown -permute " << argv[i+1] << std::endl; exit(1);
+            }
+            i++;
         } else if (!strcmp(argv[i],"-planes")){
             panel_planes = atoi(argv[i+1]);
             i++;
@@ -180,7 +188,8 @@ HTSimProtoTcp::HTSimProtoTcp(const HTSim::tm_info* const tm, int argc, char** ar
 if (!panel_kind.empty()) {
     if (panel_latency == 0) { panel_latency = timeFromNs(1000.0); panel_plane_latency = panel_latency; }
     PanelTopology::Base b;
-    if (panel_kind == "mesh2d") { b = PanelTopology::Base::Mesh2D; }
+    if (panel_kind == "ring1d") { b = PanelTopology::Base::Ring1D; if (panel_planes == 0) panel_planes = 2; }
+    else if (panel_kind == "mesh2d") { b = PanelTopology::Base::Mesh2D; }
     else if (panel_kind == "torus2d") { b = PanelTopology::Base::Torus2D; }
     else if (panel_kind == "mesh3d") { b = PanelTopology::Base::Mesh3D; }
     else if (panel_kind == "torus3d") { b = PanelTopology::Base::Torus3D; }
@@ -316,10 +325,14 @@ void HTSimProtoTcp::schedule_htsim_event(FlowInfo flow, int flow_id) {
 
     std::vector<PanelTopology::Candidate>* panel_cands = NULL;
     PanelTopology::Candidate* panel_choice = NULL;
+    uint32_t phys_src = (panel_perm.empty() || src >= panel_perm.size())
+        ? (uint32_t)src : (uint32_t)panel_perm[src];
+    uint32_t phys_dst = (panel_perm.empty() || dst >= panel_perm.size())
+        ? (uint32_t)dst : (uint32_t)panel_perm[dst];
     if (panel_top) {
-        panel_cands = panel_top->get_candidates(src, dst);
+        panel_cands = panel_top->get_candidates(phys_src, phys_dst);
         panel_choice = panel_route_select(
-            panel_cands, msg_size, src, dst, panel_top->planes(),
+            panel_cands, msg_size, phys_src, phys_dst, panel_top->planes(),
             panel_policy != PanelPolicy::Static,
             panel_policy == PanelPolicy::DirectPref, direct_preference_factor);
         for (size_t k = 0; k < panel_choice->hop_queues.size(); k++)
