@@ -119,6 +119,9 @@ HTSimProtoTcp::HTSimProtoTcp(const HTSim::tm_info* const tm, int argc, char** ar
         } else if (!strcmp(argv[i],"-seed")){
             rng_seed = (unsigned)atoi(argv[i+1]);
             i++;
+        } else if (!strcmp(argv[i],"-maxwin")){
+            nocc_maxwin = (uint64_t)atoll(argv[i+1]);
+            i++;
         } else if (!strcmp(argv[i],"-nocc")){
             nocc = true;
         } else if (!strcmp(argv[i],"-q")){
@@ -384,6 +387,9 @@ void HTSimProtoTcp::schedule_htsim_event(FlowInfo flow, int flow_id) {
             // Full window from the first RTT: no slow start, and with no drops
             // the AIMD path never executes. mss headroom covers rounding.
             uint64_t win = (uint64_t)msg_size + 2 * Packet::data_packet_size();
+            if (nocc_maxwin > 0 && win > nocc_maxwin) {
+                win = nocc_maxwin;
+            }
             tcpSrc->set_cwnd(win);
             tcpSrc->set_ssthresh(win);
         }

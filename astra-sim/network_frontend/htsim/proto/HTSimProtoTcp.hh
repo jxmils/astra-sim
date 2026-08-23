@@ -71,6 +71,12 @@ class HTSimProtoTcp final : public HTSimSession::HTSimSessionImpl {
         // control never engages. FCT is then set by bandwidth, latency and
         // queueing only. Loss under -nocc is a fatal error at finish().
         bool nocc = false;
+        // Cap on the -nocc window (bytes). 0 = uncapped (cwnd = flow size).
+        // A cap >= the per-flow bandwidth-delay product keeps FCT
+        // bandwidth-determined while bounding in-flight bytes, which is what
+        // makes multi-GiB collectives simulable: uncapped, in-flight ~ S and
+        // bisection buffers would need gigabytes.
+        uint64_t nocc_maxwin = 0;
         // --- Panel mode: grid fabrics + switch planes with policy routing ---
         // Selected by `-panel <mesh2d|torus2d|mesh3d|torus3d|hybrid|fullswitch>`
         // in --htsim_opts. When null, behaviour is the stock fat-tree path.
