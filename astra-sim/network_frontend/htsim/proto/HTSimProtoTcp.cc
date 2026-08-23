@@ -1,5 +1,8 @@
 #include "HTSimProtoTcp.hh"
 #include "HTSimSession.hh"
+#include "OcsPlanLoader.hh"
+#include <climits>
+#include <set>
 
 // Adapted from HTSim main_tcp.cpp
 
@@ -119,6 +122,15 @@ HTSimProtoTcp::HTSimProtoTcp(const HTSim::tm_info* const tm, int argc, char** ar
         } else if (!strcmp(argv[i],"-seed")){
             rng_seed = (unsigned)atoi(argv[i+1]);
             i++;
+        } else if (!strcmp(argv[i],"-ocsplan")){
+            ocs_plan_path = argv[i+1];
+            ocs_plan_mode = true;
+            i++;
+        } else if (!strcmp(argv[i],"-ocs")){
+            ocs_mode = true;
+        } else if (!strcmp(argv[i],"-reconfNs")){
+            ocs_reconf = timeFromNs(atof(argv[i+1]));
+            i++;
         } else if (!strcmp(argv[i],"-maxwin")){
             nocc_maxwin = (uint64_t)atoll(argv[i+1]);
             i++;
@@ -213,8 +225,20 @@ if (!panel_kind.empty()) {
                                   panel_link_gibps, panel_latency,
                                   panel_plane_gibps, panel_plane_latency,
                                   memFromPkt(queuesize_pkts), logfile.get(), &eventlist);
+    if (ocs_plan_mode) {
+        if (!panel_top) { std::cerr << "-ocsplan requires -panel" << std::endl; exit(1); }
+        load_ocs_plan();
+    }
+    if (ocs_mode && panel_planes > 0) {
+        ocs_up_free.assign(panel_planes, std::vector<simtime_picosec>(no_of_nodes, 0));
+        ocs_down_free.assign(panel_planes, std::vector<simtime_picosec>(no_of_nodes, 0));
+        ocs_up_peer.assign(panel_planes, std::vector<int>(no_of_nodes, -1));
+        ocs_down_peer.assign(panel_planes, std::vector<int>(no_of_nodes, -1));
+    }
     std::cout << "Panel topology: " << panel_kind << " nodes " << no_of_nodes
               << " planes " << panel_planes << " linkGiBps " << panel_link_gibps
+              << " OCS mode: " << (ocs_mode ? "on" : "off")
+              << " reconfNs " << timeAsNs(ocs_reconf)
               << " policy " << (panel_policy == PanelPolicy::Static ? "static" :
                  panel_policy == PanelPolicy::DirectPref ? "directpref" : "adaptive")
               << std::endl;
@@ -275,6 +299,122 @@ if (!panel_kind.empty()) {
         ff->net_paths = net_paths;
 }
 
+
+void HTSimProtoTcp::load_ocs_plan() {
+    OcsPlanData plan;
+    std::string err;
+    if (!load_ocs_plan_file(ocs_plan_path, plan, err)) {
+        std::cerr << "OCS plan load failed: " << err << std::endl; exit(1);
+    }
+    if (plan.planes != panel_planes) {
+        std::cerr << "Plan planes " << plan.planes << " != topology planes "
+                  << panel_planes << std::endl; exit(1);
+    }
+    ocs_plan_reconf_ns = plan.reconfiguration_ns;
+    if (ocs_reconf != 10000) { ocs_plan_reconf_ns = timeAsNs(ocs_reconf); }
+    ocs_initial_reconf = plan.initial_reconfiguration;
+    ocs_plan_scheduled = plan.scheduled_bytes;
+    ocs_cfgs.assign(plan.planes, {});
+    ocs_cur.assign(plan.planes, 0);
+    ocs_dark.assign(plan.planes, false);
+    for (size_t k = 0; k < plan.configurations.size(); k++) {
+        const OcsPlanData::Cfg& src = plan.configurations[k];
+        OcsCfg oc; oc.round = src.round;
+        int pl = src.plane;
+        int cidx = (int)ocs_cfgs[pl].size();
+        for (size_t q = 0; q < src.circuits.size(); q++) {
+            int s = std::get<0>(src.circuits[q]);
+            int d = std::get<1>(src.circuits[q]);
+            uint64_t b = std::get<2>(src.circuits[q]);
+            oc.circuits.push_back(std::make_tuple(s, d, b));
+            ocs_slots[std::make_tuple(s, d, b, src.stream)].push_back({pl, cidx});
+        }
+        oc.remaining = (int)oc.circuits.size();
+        ocs_cfgs[pl].push_back(oc);
+    }
+    for (size_t k = 0; k < plan.assignments.size(); k++) {
+        ocs_route_kind[std::make_tuple(std::get<0>(plan.assignments[k]),
+                                       std::get<1>(plan.assignments[k]),
+                                       std::get<2>(plan.assignments[k]))]
+            .push_back(std::get<3>(plan.assignments[k]) ? 'D' : 'O');
+    }
+    std::cout << "OCS plan loaded: planes " << plan.planes
+              << " rounds " << plan.rounds
+              << " reconf_ns " << ocs_plan_reconf_ns
+              << " scheduled_bytes " << ocs_plan_scheduled << std::endl;
+}
+
+void HTSimProtoTcp::ocs_install_next(int plane) {
+    ocs_install_next_uncharged(plane, false);   // reconfig counted at drain time
+}
+
+void HTSimProtoTcp::ocs_install_next_uncharged(int plane, bool /*counted*/) {
+    ocs_dark[plane] = false;
+    ocs_cur[plane]++;
+    ocs_plan_rounds_done++;
+    auto key = std::make_pair(plane, ocs_cur[plane]);
+    auto it = ocs_held.find(key);
+    if (it != ocs_held.end()) {
+        std::vector<std::pair<HTSim::FlowInfo,int>> flows;
+        flows.swap(it->second);
+        ocs_held.erase(it);
+        ocs_releasing = true;
+        ocs_releasing_plane = plane;
+        for (size_t i = 0; i < flows.size(); i++) {
+            schedule_htsim_event(flows[i].first, flows[i].second);
+        }
+        ocs_releasing = false;
+        ocs_releasing_plane = -2;
+    }
+}
+
+static void ocs_advance_cb(void* arg) {
+    // arg encodes (impl*, plane) via a heap pair
+    std::pair<HTSimProtoTcp*, int>* pp = (std::pair<HTSimProtoTcp*, int>*)arg;
+    pp->first->ocs_install_next(pp->second);
+    delete pp;
+}
+
+bool HTSimProtoTcp::matching_changed(const OcsCfg& a, const OcsCfg& b) {
+    // Reconfiguration is charged only when the installed matching actually
+    // changes (mirrors OcsSwitch::configuration_changed): compare the
+    // (src,dst) pair sets, ignoring byte quotas.
+    std::set<std::pair<int,int>> sa, sb;
+    for (size_t i = 0; i < a.circuits.size(); i++)
+        sa.insert({std::get<0>(a.circuits[i]), std::get<1>(a.circuits[i])});
+    for (size_t i = 0; i < b.circuits.size(); i++)
+        sb.insert({std::get<0>(b.circuits[i]), std::get<1>(b.circuits[i])});
+    return sa != sb;
+}
+
+static void ocs_drain_cb(void* arg) {
+    std::pair<HTSimProtoTcp*, int>* pp = (std::pair<HTSimProtoTcp*, int>*)arg;
+    pp->first->ocs_drain_reached(pp->second);
+    delete pp;
+}
+
+// The installed configuration's circuits have all finished SERIALIZING
+// (drained their uplinks). Mirroring the analytical OcsSwitch: the circuit can
+// be torn down now -- in-flight propagation completes after removal. Charge
+// T_r only if the next matching differs.
+void HTSimProtoTcp::ocs_drain_reached(int plane) {
+    int cfg = ocs_cur[plane];
+    if (cfg + 1 >= (int)ocs_cfgs[plane].size()) return;
+    bool changed = matching_changed(ocs_cfgs[plane][cfg], ocs_cfgs[plane][cfg + 1]);
+    if (changed) ocs_reconfigs++;
+    if (changed && ocs_plan_reconf_ns > 0) {
+        ocs_dark[plane] = true;
+        std::pair<HTSimProtoTcp*, int>* arg = new std::pair<HTSimProtoTcp*, int>(this, plane);
+        HTSimSession::instance().schedule_astra_event(ocs_plan_reconf_ns, &ocs_advance_cb, arg);
+    } else {
+        ocs_install_next_uncharged(plane, changed);
+    }
+}
+
+void HTSimProtoTcp::flow_done(int flow_id) {
+    ocs_flow_cfg.erase(flow_id);   // advancement is drain-driven (see ocs_drain_reached)
+}
+
 // Select among panel route candidates per the routing policy, mirroring the
 // analytical Hybrid2D::route semantics: cost = sum(latency) + max over hops of
 // (reserved_bytes + s)/B; evaluation order direct -> preferred plane -> other
@@ -327,6 +467,27 @@ static PanelTopology::Candidate* panel_route_select(
     return &(*cands)[best];
 }
 
+void HTSimProtoTcp::ocs_note_started(int flow_id, uint64_t bytes,
+                                     linkspeed_bps plane_rate) {
+    std::map<int, std::pair<int,int>>::iterator it = ocs_flow_cfg.find(flow_id);
+    if (it == ocs_flow_cfg.end()) return;
+    int pl = it->second.first, cfgi = it->second.second;
+    OcsCfg& oc = ocs_cfgs[pl][cfgi];
+    oc.started++;
+    simtime_picosec drain = eventlist.now()
+        + (simtime_picosec)((double)bytes * 8.0 * 1e12 / (double)plane_rate)
+        + (simtime_picosec)(2.0 * 1500.0 * 8.0 * 1e12 / (double)plane_rate);
+    if (drain > oc.max_drain) oc.max_drain = drain;
+    if (oc.started == (int)oc.circuits.size() && !oc.advance_scheduled &&
+        ocs_cur[pl] == cfgi) {
+        oc.advance_scheduled = true;
+        long double delta_ns = timeAsNs(oc.max_drain - eventlist.now());
+        if (delta_ns < 0) delta_ns = 0;
+        std::pair<HTSimProtoTcp*, int>* arg = new std::pair<HTSimProtoTcp*, int>(this, pl);
+        HTSimSession::instance().schedule_astra_event(delta_ns, &ocs_drain_cb, arg);
+    }
+}
+
 // Schedule_htsim_event creates a new connection and schedules it in HTSim.
 // Adapted from main connections loop
 void HTSimProtoTcp::schedule_htsim_event(FlowInfo flow, int flow_id) {
@@ -338,18 +499,165 @@ void HTSimProtoTcp::schedule_htsim_event(FlowInfo flow, int flow_id) {
 
     std::vector<PanelTopology::Candidate>* panel_cands = NULL;
     PanelTopology::Candidate* panel_choice = NULL;
+    simtime_picosec panel_flow_delay = 0;
+    int ocs_forced_plane = -2;   // -2 = not plan mode; -1 = DIRECT; >=0 plane
+    // ocs_plan_mode dispatch: consult the plan; hold flows whose configuration
+    // is not yet installed. (Uses logical->physical ids like everything else.)
+    if (panel_top && ocs_plan_mode && ocs_releasing) {
+        ocs_forced_plane = ocs_releasing_plane;
+        ocs_plan_transmitted += flow.size;
+    } else if (panel_top && ocs_plan_mode) {
+        uint32_t ps = (panel_perm.empty() || (size_t)flow.src >= panel_perm.size())
+            ? (uint32_t)flow.src : (uint32_t)panel_perm[flow.src];
+        uint32_t pd = (panel_perm.empty() || (size_t)flow.dst >= panel_perm.size())
+            ? (uint32_t)flow.dst : (uint32_t)panel_perm[flow.dst];
+        auto rk = ocs_route_kind.find(std::make_tuple((int)ps, (int)pd, (uint64_t)flow.size));
+        char kind = 'O';
+        if (rk != ocs_route_kind.end() && !rk->second.empty()) {
+            kind = rk->second.front(); rk->second.pop_front();
+        }
+        if (kind == 'D') {
+            ocs_forced_plane = -1;
+        } else {
+            std::pair<int,int> slot(-1, -1);
+            auto si = ocs_slots.find(std::make_tuple((int)ps, (int)pd,
+                                                     (uint64_t)flow.size, flow.tag));
+            if (si != ocs_slots.end() && !si->second.empty()) {
+                slot = si->second.front(); si->second.pop_front();
+            } else {
+                // any-stream fallback: first non-empty deque for this (s,d,bytes)
+                auto lo = ocs_slots.lower_bound(std::make_tuple((int)ps, (int)pd,
+                                                (uint64_t)flow.size, INT_MIN));
+                for (; lo != ocs_slots.end(); ++lo) {
+                    if (std::get<0>(lo->first) != (int)ps ||
+                        std::get<1>(lo->first) != (int)pd ||
+                        std::get<2>(lo->first) != (uint64_t)flow.size) break;
+                    if (!lo->second.empty()) {
+                        slot = lo->second.front(); lo->second.pop_front(); break;
+                    }
+                }
+            }
+            if (slot.first < 0) {
+                std::cerr << "OCS plan has no slot for flow " << ps << "->" << pd
+                          << " bytes " << flow.size << " tag " << flow.tag << std::endl;
+                exit(3);
+            }
+            int pl = slot.first, cfgi = slot.second;
+            if (!(ocs_cur[pl] == cfgi && !ocs_dark[pl])) {
+                if (cfgi < ocs_cur[pl]) {
+                    std::cerr << "Warning: flow for past config plane " << pl
+                              << " cfg " << cfgi << " (cur " << ocs_cur[pl] << ")" << std::endl;
+                } else {
+                    ocs_flow_cfg[flow_id] = slot;
+                    ocs_held[std::make_pair(pl, cfgi)].push_back({flow, flow_id});
+                    return;    // held until the configuration installs
+                }
+            }
+            ocs_flow_cfg[flow_id] = slot;
+            ocs_forced_plane = pl;
+            ocs_plan_transmitted += flow.size;
+        }
+    }
     uint32_t phys_src = (panel_perm.empty() || src >= panel_perm.size())
         ? (uint32_t)src : (uint32_t)panel_perm[src];
     uint32_t phys_dst = (panel_perm.empty() || dst >= panel_perm.size())
         ? (uint32_t)dst : (uint32_t)panel_perm[dst];
     if (panel_top) {
         panel_cands = panel_top->get_candidates(phys_src, phys_dst);
-        panel_choice = panel_route_select(
-            panel_cands, msg_size, phys_src, phys_dst, panel_top->planes(),
-            panel_policy != PanelPolicy::Static,
-            panel_policy == PanelPolicy::DirectPref, direct_preference_factor);
-        for (size_t k = 0; k < panel_choice->hop_queues.size(); k++)
-            panel_choice->hop_queues[k]->reserve_bytes(msg_size);
+        if ((ocs_mode || ocs_plan_mode) && panel_top->planes() > 0) {
+            // Evaluate: direct via ledger cost; each plane via lease cost
+            //   T_O = wait + T_r(unless same-pair reuse) + 2L + s/B.
+            if (ocs_forced_plane >= -1) {
+            // plan decides: DIRECT -> the direct candidate; else the plane's
+            // 2-hop route. No policy, no leasing; gating already done above.
+            int want = ocs_forced_plane;
+            int idx = -1;
+            for (size_t ci = 0; ci < panel_cands->size(); ci++) {
+                PanelTopology::Candidate& cd = (*panel_cands)[ci];
+                if (want < 0 && !cd.is_plane) { idx = (int)ci; break; }
+                if (want >= 0 && cd.is_plane && cd.plane == want) { idx = (int)ci; break; }
+            }
+            assert(idx >= 0);
+            panel_choice = &(*panel_cands)[idx];
+            if (ocs_plan_mode && panel_choice->is_plane) {
+                ocs_note_started(flow_id, msg_size,
+                                 panel_choice->hop_queues[0]->link_bitrate());
+            }
+            if (!panel_choice->is_plane) {
+                for (size_t k = 0; k < panel_choice->hop_queues.size(); k++)
+                    panel_choice->hop_queues[k]->reserve_bytes(msg_size);
+            }
+        } else {
+        simtime_picosec now_ps = eventlist.now();
+            int best = -1; double best_cost = 0; bool best_reuse = false;
+            simtime_picosec best_start = 0;
+            double direct_cost = -1; int direct_idx = -1;
+            for (size_t ci = 0; ci < panel_cands->size(); ci++) {
+                PanelTopology::Candidate& cd = (*panel_cands)[ci];
+                double cost;
+                bool reuse = false; simtime_picosec tstart = now_ps;
+                if (!cd.is_plane) {
+                    double ser = 0;
+                    for (size_t k = 0; k < cd.hop_queues.size(); k++) {
+                        LedgerQueue* q = cd.hop_queues[k];
+                        double Bpns = (double)q->link_bitrate() / 8.0 / 1e9;
+                        double queued = (panel_policy != PanelPolicy::Static)
+                                            ? (double)q->reserved_bytes() : 0.0;
+                        double t = (queued + (double)msg_size) / Bpns;
+                        if (t > ser) ser = t;
+                    }
+                    cost = (double)cd.latency_sum / 1000.0 + ser;
+                    direct_cost = cost; direct_idx = (int)ci;
+                } else {
+                    int pl = cd.plane;
+                    simtime_picosec t0 = now_ps;
+                    if (ocs_up_free[pl][phys_src] > t0) t0 = ocs_up_free[pl][phys_src];
+                    if (ocs_down_free[pl][phys_dst] > t0) t0 = ocs_down_free[pl][phys_dst];
+                    reuse = (ocs_up_peer[pl][phys_src] == (int)phys_dst &&
+                             ocs_down_peer[pl][phys_dst] == (int)phys_src);
+                    tstart = t0 + (reuse ? 0 : ocs_reconf);
+                    double Bpns = (double)cd.hop_queues[0]->link_bitrate() / 8.0 / 1e9;
+                    cost = timeAsNs(tstart - now_ps)
+                         + (double)cd.latency_sum / 1000.0
+                         + (double)msg_size / Bpns;
+                }
+                if (best < 0 || cost < best_cost) {
+                    best = (int)ci; best_cost = cost; best_reuse = reuse; best_start = tstart;
+                }
+            }
+            if (panel_policy == PanelPolicy::DirectPref && direct_idx >= 0 &&
+                best != direct_idx &&
+                direct_cost <= direct_preference_factor * best_cost) {
+                best = direct_idx;
+            }
+            panel_choice = &(*panel_cands)[best];
+            if (panel_choice->is_plane) {
+                // ocs lease commit
+                int pl = panel_choice->plane;
+                double Bpns = (double)panel_choice->hop_queues[0]->link_bitrate() / 8.0 / 1e9;
+                simtime_picosec occ = (simtime_picosec)(((double)msg_size / Bpns) * 1000.0)
+                                      + timeFromNs(3.0 * 1500.0 / Bpns);
+                simtime_picosec rel = best_start + occ;
+                ocs_up_free[pl][phys_src] = rel;
+                ocs_down_free[pl][phys_dst] = rel;
+                ocs_up_peer[pl][phys_src] = (int)phys_dst;
+                ocs_down_peer[pl][phys_dst] = (int)phys_src;
+                if (best_reuse) ocs_reuses++; else ocs_reconfigs++;
+                ocs_wait_total += (best_start - eventlist.now());
+                panel_flow_delay = best_start - eventlist.now();
+            } else {
+                for (size_t k = 0; k < panel_choice->hop_queues.size(); k++)
+                    panel_choice->hop_queues[k]->reserve_bytes(msg_size);
+            }
+        }
+        } else {
+            panel_choice = panel_route_select(
+                panel_cands, msg_size, phys_src, phys_dst, panel_top->planes(),
+                panel_policy != PanelPolicy::Static,
+                panel_policy == PanelPolicy::DirectPref, direct_preference_factor);
+            for (size_t k = 0; k < panel_choice->hop_queues.size(); k++)
+                panel_choice->hop_queues[k]->reserve_bytes(msg_size);
+        }
         auto key = std::make_pair(panel_choice->is_plane ? 1 : 0, panel_choice->hops);
         route_telemetry[key].first += 1;
         route_telemetry[key].second += msg_size;
@@ -482,7 +790,11 @@ void HTSimProtoTcp::schedule_htsim_event(FlowInfo flow, int flow_id) {
             logfile->writeName(*mtcp);
         }
 
-        tcpSrc->connect(*routeout, *routein, *tcpSnk, start + timeFromMs(extrastarttime));
+        {
+            simtime_picosec fd = 0;
+            if (panel_top) { fd = panel_flow_delay; }
+            tcpSrc->connect(*routeout, *routein, *tcpSnk, start + fd + timeFromMs(extrastarttime));
+        }
 
         if (flow_id) {
             tcpSrc->setFlowId(flow_id);
@@ -533,6 +845,19 @@ void HTSimProtoTcp::finish() {
                   << " payload_bytes=" << it->second.second
                   << " byte_hops=" << it->second.second * (uint64_t)it->first.second
                   << " propagation_ns=0 serialization_ns=0" << std::endl;
+    }
+    if (ocs_plan_mode) {
+        std::cout << "OCS_PLAN_REPLAY reconfigurations=" << ocs_reconfigs
+                  << " rounds_advanced=" << ocs_plan_rounds_done
+                  << " scheduled_bytes=" << ocs_plan_scheduled
+                  << " transmitted_bytes=" << ocs_plan_transmitted
+                  << " reconf_ns=" << ocs_plan_reconf_ns << std::endl;
+    }
+    if (ocs_mode) {
+        std::cout << "OCS_STATS reconfigs=" << ocs_reconfigs
+                  << " circuit_reuses=" << ocs_reuses
+                  << " total_wait_ns=" << timeAsNs(ocs_wait_total)
+                  << " reconf_ns=" << timeAsNs(ocs_reconf) << std::endl;
     }
     std::cout << "Duplicate flow finishes ignored: "
               << HTSimSession::duplicate_finish_count << std::endl;

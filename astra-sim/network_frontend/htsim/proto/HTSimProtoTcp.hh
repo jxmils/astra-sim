@@ -9,6 +9,8 @@
 #include <fstream>
 
 #include "HTSimSessionImpl.hh"
+#include <deque>
+#include <tuple>
 
 #include "config.h"
 #include "clock.h"
@@ -77,6 +79,53 @@ class HTSimProtoTcp final : public HTSimSession::HTSimSessionImpl {
         // makes multi-GiB collectives simulable: uncapped, in-flight ~ S and
         // bisection buffers would need gigabytes.
         uint64_t nocc_maxwin = 0;
+        // --- OCS mode: planes are circuit switches with leases ---
+        // A flow using plane p leases (uplink src, downlink dst) exclusively:
+        // start = max(now, port frees) + T_r (dark reconfiguration gap),
+        // released after the flow's serialization window. Same-pair
+        // consecutive flows reuse the standing circuit (no T_r), so
+        // matching-structured schedules pay T_r only on configuration
+        // changes. Circuits are exclusive: nothing queues inside the switch.
+        bool ocs_mode = false;
+        simtime_picosec ocs_reconf = 10000;   // 10 ns default, in ps
+        // per plane, per node: port busy-until and last connected peer
+        std::vector<std::vector<simtime_picosec>> ocs_up_free, ocs_down_free;
+        std::vector<std::vector<int>> ocs_up_peer, ocs_down_peer;
+        uint64_t ocs_reconfigs = 0, ocs_reuses = 0;
+        // --- Plan-driven OCS (merged model): executes the same ocs-plan.json
+        // as the analytical OcsSwitch. Per plane: an ordered configuration
+        // sequence (matchings with per-circuit byte quotas). A flow assigned
+        // to configuration k of plane p starts only while that configuration
+        // is installed; when a configuration's circuits all complete, the
+        // plane goes dark for reconfiguration_ns and installs the next one.
+        std::string ocs_plan_path;
+        bool ocs_plan_mode = false;
+        bool ocs_initial_reconf = false;
+        double ocs_plan_reconf_ns = 0.0;
+    public:  // OCS plan executor (callback needs access)
+        struct OcsCfg { int round; std::vector<std::tuple<int,int,uint64_t>> circuits;
+                        int remaining; int started = 0;
+                        simtime_picosec max_drain = 0; bool advance_scheduled = false; };
+        std::vector<std::vector<OcsCfg>> ocs_cfgs;      // [plane][seq]
+        std::vector<int> ocs_cur;                        // installed cfg index
+        std::vector<bool> ocs_dark;                      // reconfiguring
+        // (src,dst,bytes,tag) -> FIFO of (plane, cfg_idx); tag==-1 fallback key
+        std::map<std::tuple<int,int,uint64_t,int>, std::deque<std::pair<int,int>>> ocs_slots;
+        std::map<std::tuple<int,int,uint64_t>, std::deque<char>> ocs_route_kind; // 'D'/'O'
+        std::map<int, std::pair<int,int>> ocs_flow_cfg;  // flow_id -> (plane,cfg)
+        std::map<std::pair<int,int>, std::vector<std::pair<HTSim::FlowInfo,int>>> ocs_held;
+        bool ocs_releasing = false;
+        int ocs_releasing_plane = -2;
+        uint64_t ocs_plan_scheduled = 0, ocs_plan_transmitted = 0;
+        int ocs_plan_rounds_done = 0;
+        void load_ocs_plan();
+        void ocs_install_next(int plane);
+        void ocs_install_next_uncharged(int plane, bool counted);
+        bool matching_changed(const OcsCfg& a, const OcsCfg& b);
+        void ocs_drain_reached(int plane);
+        void ocs_note_started(int flow_id, uint64_t bytes, linkspeed_bps plane_rate);
+        virtual void flow_done(int flow_id);
+        simtime_picosec ocs_wait_total = 0;
         // --- Panel mode: grid fabrics + switch planes with policy routing ---
         // Selected by `-panel <mesh2d|torus2d|mesh3d|torus3d|hybrid|fullswitch>`
         // in --htsim_opts. When null, behaviour is the stock fat-tree path.
