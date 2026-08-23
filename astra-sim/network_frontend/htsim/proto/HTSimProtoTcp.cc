@@ -83,6 +83,16 @@ HTSimProtoTcp::HTSimProtoTcp(const HTSim::tm_info* const tm, int argc, char** ar
             if (!strcmp(argv[i+1],"qtp8")) {
                 static const int qtp8[8] = {0,1,4,5,7,2,3,6};
                 panel_perm.assign(qtp8, qtp8+8);
+            } else if (!strcmp(argv[i+1],"qtp64")) {
+                // Row x column extension of qtp8 onto the 8x8 grid:
+                // logical r = a + 4b + 8c + 32d  (dims [4,2,4,2]);
+                // physical = qtp8[c+4d]*8 + qtp8[a+4b].
+                static const int qtp8m[8] = {0,1,4,5,7,2,3,6};
+                panel_perm.assign(64, 0);
+                for (int r = 0; r < 64; r++) {
+                    int a = r % 4, b = (r / 4) % 2, cc = (r / 8) % 4, dd = (r / 32) % 2;
+                    panel_perm[r] = qtp8m[cc + 4 * dd] * 8 + qtp8m[a + 4 * b];
+                }
             } else if (strcmp(argv[i+1],"identity")) {
                 std::cerr << "Unknown -permute " << argv[i+1] << std::endl; exit(1);
             }
