@@ -617,9 +617,17 @@ void HTSimProtoTcp::schedule_htsim_event(FlowInfo flow, int flow_id) {
                              ocs_down_peer[pl][phys_dst] == (int)phys_src);
                     tstart = t0 + (reuse ? 0 : ocs_reconf);
                     double Bpns = (double)cd.hop_queues[0]->link_bitrate() / 8.0 / 1e9;
-                    cost = timeAsNs(tstart - now_ps)
-                         + (double)cd.latency_sum / 1000.0
-                         + (double)msg_size / Bpns;
+                    if (panel_policy == PanelPolicy::Static) {
+                        // static: unloaded costs -- no wait awareness; a plane
+                        // is priced at T_r + path latency + serialization only.
+                        cost = timeAsNs(ocs_reconf)
+                             + (double)cd.latency_sum / 1000.0
+                             + (double)msg_size / Bpns;
+                    } else {
+                        cost = timeAsNs(tstart - now_ps)
+                             + (double)cd.latency_sum / 1000.0
+                             + (double)msg_size / Bpns;
+                    }
                 }
                 if (best < 0 || cost < best_cost) {
                     best = (int)ci; best_cost = cost; best_reuse = reuse; best_start = tstart;
