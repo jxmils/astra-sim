@@ -162,6 +162,7 @@ class HTSimProtoTcp final : public HTSimSession::HTSimSessionImpl {
         // {2,3,6,7} (complete K4s via ring D0 + planes P0,P1) and its dim-1
         // pairs land on the alternate ring matching D1.
         std::vector<int> panel_perm;
+        std::vector<int> panel_extents;   // per-dim base extents ("-extents 4x8x8")
         double direct_preference_factor = 1.10;
         // telemetry: (is_plane, hops) -> {messages, payload_bytes}
         std::map<std::pair<int,int>, std::pair<uint64_t,uint64_t>> route_telemetry;

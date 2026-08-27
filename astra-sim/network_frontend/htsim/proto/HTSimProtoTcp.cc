@@ -100,6 +100,16 @@ HTSimProtoTcp::HTSimProtoTcp(const HTSim::tm_info* const tm, int argc, char** ar
                 std::cerr << "Unknown -permute " << argv[i+1] << std::endl; exit(1);
             }
             i++;
+        } else if (!strcmp(argv[i],"-extents")){
+            panel_extents.clear();
+            const char* s = argv[i+1];
+            int v = 0; bool any = false;
+            for (; ; s++) {
+                if (*s >= '0' && *s <= '9') { v = v*10 + (*s-'0'); any = true; }
+                else { if (any) panel_extents.push_back(v); v = 0; any = false;
+                       if (!*s) break; }
+            }
+            i++;
         } else if (!strcmp(argv[i],"-planes")){
             panel_planes = atoi(argv[i+1]);
             i++;
@@ -220,11 +230,13 @@ if (!panel_kind.empty()) {
     else if (panel_kind == "torus3d") { b = PanelTopology::Base::Torus3D; }
     else if (panel_kind == "hybrid") { b = PanelTopology::Base::Torus2D; if (panel_planes == 0) panel_planes = 2; }
     else if (panel_kind == "fullswitch") { b = PanelTopology::Base::None; if (panel_planes == 0) panel_planes = 6; }
+    else if (panel_kind == "ringrows") { b = PanelTopology::Base::RingRows; if (panel_planes == 0) panel_planes = 2; }
     else { std::cerr << "Unknown -panel kind " << panel_kind << std::endl; exit(1); }
     panel_top = new PanelTopology(no_of_nodes, b, panel_planes,
                                   panel_link_gibps, panel_latency,
                                   panel_plane_gibps, panel_plane_latency,
-                                  memFromPkt(queuesize_pkts), logfile.get(), &eventlist);
+                                  memFromPkt(queuesize_pkts), logfile.get(), &eventlist,
+                                  panel_extents);
     if (ocs_plan_mode) {
         if (!panel_top) { std::cerr << "-ocsplan requires -panel" << std::endl; exit(1); }
         load_ocs_plan();
