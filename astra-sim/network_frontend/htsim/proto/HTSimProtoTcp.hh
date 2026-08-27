@@ -105,13 +105,31 @@ class HTSimProtoTcp final : public HTSimSession::HTSimSessionImpl {
     public:  // OCS plan executor (callback needs access)
         struct OcsCfg { int round; std::vector<std::tuple<int,int,uint64_t>> circuits;
                         int remaining; int started = 0;
-                        simtime_picosec max_drain = 0; bool advance_scheduled = false; };
+                        simtime_picosec max_drain = 0; bool advance_scheduled = false;
+                        std::vector<std::pair<int,int>> matching;   // installed pairs
+                        bool force_reconf = false; };
         std::vector<std::vector<OcsCfg>> ocs_cfgs;      // [plane][seq]
         std::vector<int> ocs_cur;                        // installed cfg index
         std::vector<bool> ocs_dark;                      // reconfiguring
         // (src,dst,bytes,tag) -> FIFO of (plane, cfg_idx); tag==-1 fallback key
         std::map<std::tuple<int,int,uint64_t,int>, std::deque<std::pair<int,int>>> ocs_slots;
         std::map<std::tuple<int,int,uint64_t>, std::deque<char>> ocs_route_kind; // 'D'/'O'
+        // v5 assignments: (src,dst,bytes,stream) -> FIFO of records; an OCS
+        // record with >1 stripes splits the logical transfer across planes.
+        struct OcsAsn { bool is_direct;
+                        std::vector<std::pair<int,uint64_t>> stripes; };
+        std::map<std::tuple<int,int,uint64_t,int>, std::deque<OcsAsn>> ocs_assigns;
+        // striped-transfer master accounting: ASTRA sees one flow id; each
+        // stripe is an internal sub-flow with a synthetic negative tag.
+        struct StripeMaster { int src, dst; uint64_t total;
+                              int pending_send, pending_recv;
+                              bool sent_fwd = false, recv_fwd = false; };
+        std::map<int, StripeMaster> stripe_masters;   // master tag -> state
+        std::map<int, int> stripe_sub2master;         // sub tag -> master tag
+        int stripe_next_tag = 900000000;   // below FLOW_ID_DYNAMIC_BASE, above ASTRA tags
+        static HTSimProtoTcp* s_self;                 // for stripe callbacks
+        static void stripe_finish_send(int src, int dst, int bytes, int tag);
+        static void stripe_finish_recv(int src, int dst, int bytes, int tag);
         std::map<int, std::pair<int,int>> ocs_flow_cfg;  // flow_id -> (plane,cfg)
         std::map<std::pair<int,int>, std::vector<std::pair<HTSim::FlowInfo,int>>> ocs_held;
         bool ocs_releasing = false;

@@ -320,6 +320,8 @@ void HTSimProtoTcp::load_ocs_plan() {
     for (size_t k = 0; k < plan.configurations.size(); k++) {
         const OcsPlanData::Cfg& src = plan.configurations[k];
         OcsCfg oc; oc.round = src.round;
+        oc.matching = src.matching;
+        oc.force_reconf = src.force_reconf;
         int pl = src.plane;
         int cidx = (int)ocs_cfgs[pl].size();
         for (size_t q = 0; q < src.circuits.size(); q++) {
@@ -338,6 +340,13 @@ void HTSimProtoTcp::load_ocs_plan() {
                                        std::get<2>(plan.assignments[k]))]
             .push_back(std::get<3>(plan.assignments[k]) ? 'D' : 'O');
     }
+    for (size_t k = 0; k < plan.assignments_full.size(); k++) {
+        const OcsPlanData::Asn& a = plan.assignments_full[k];
+        OcsAsn rec; rec.is_direct = a.is_direct; rec.stripes = a.stripes;
+        ocs_assigns[std::make_tuple(a.src, a.dst, a.bytes, a.stream)]
+            .push_back(rec);
+    }
+    s_self = this;
     std::cout << "OCS plan loaded: planes " << plan.planes
               << " rounds " << plan.rounds
               << " reconf_ns " << ocs_plan_reconf_ns
@@ -380,10 +389,16 @@ bool HTSimProtoTcp::matching_changed(const OcsCfg& a, const OcsCfg& b) {
     // changes (mirrors OcsSwitch::configuration_changed): compare the
     // (src,dst) pair sets, ignoring byte quotas.
     std::set<std::pair<int,int>> sa, sb;
-    for (size_t i = 0; i < a.circuits.size(); i++)
-        sa.insert({std::get<0>(a.circuits[i]), std::get<1>(a.circuits[i])});
-    for (size_t i = 0; i < b.circuits.size(); i++)
-        sb.insert({std::get<0>(b.circuits[i]), std::get<1>(b.circuits[i])});
+    if (!a.matching.empty())
+        sa.insert(a.matching.begin(), a.matching.end());
+    else
+        for (size_t i = 0; i < a.circuits.size(); i++)
+            sa.insert({std::get<0>(a.circuits[i]), std::get<1>(a.circuits[i])});
+    if (!b.matching.empty())
+        sb.insert(b.matching.begin(), b.matching.end());
+    else
+        for (size_t i = 0; i < b.circuits.size(); i++)
+            sb.insert({std::get<0>(b.circuits[i]), std::get<1>(b.circuits[i])});
     return sa != sb;
 }
 
@@ -400,7 +415,8 @@ static void ocs_drain_cb(void* arg) {
 void HTSimProtoTcp::ocs_drain_reached(int plane) {
     int cfg = ocs_cur[plane];
     if (cfg + 1 >= (int)ocs_cfgs[plane].size()) return;
-    bool changed = matching_changed(ocs_cfgs[plane][cfg], ocs_cfgs[plane][cfg + 1]);
+    bool changed = ocs_cfgs[plane][cfg + 1].force_reconf ||
+                   matching_changed(ocs_cfgs[plane][cfg], ocs_cfgs[plane][cfg + 1]);
     if (changed) ocs_reconfigs++;
     if (changed && ocs_plan_reconf_ns > 0) {
         ocs_dark[plane] = true;
@@ -413,6 +429,54 @@ void HTSimProtoTcp::ocs_drain_reached(int plane) {
 
 void HTSimProtoTcp::flow_done(int flow_id) {
     ocs_flow_cfg.erase(flow_id);   // advancement is drain-driven (see ocs_drain_reached)
+}
+
+HTSimProtoTcp* HTSimProtoTcp::s_self = NULL;
+
+// Stripe sub-flow completion: forward the logical (master) completion to
+// ASTRA only when every stripe has finished. The sink callback can fire more
+// than once per flow, so completions are counted at most once per direction.
+static std::map<int,int> stripe_sub_state;   // sub tag -> bit0 send, bit1 recv
+
+void HTSimProtoTcp::stripe_finish_send(int, int, int, int tag) {
+    HTSimProtoTcp* self = s_self;
+    if (!self) return;
+    auto mi = self->stripe_sub2master.find(tag);
+    if (mi == self->stripe_sub2master.end()) return;
+    int& st = stripe_sub_state[tag];
+    if (st & 1) return;
+    st |= 1;
+    int master = mi->second;
+    if (st == 3) { stripe_sub_state.erase(tag); self->stripe_sub2master.erase(mi); }
+    auto sm = self->stripe_masters.find(master);
+    if (sm == self->stripe_masters.end()) return;
+    StripeMaster& m = sm->second;
+    if (--m.pending_send == 0 && !m.sent_fwd) {
+        m.sent_fwd = true;
+        HTSimSession::flow_finish_send(m.src, m.dst, (int)m.total, master);
+    }
+    if (m.sent_fwd && m.recv_fwd) self->stripe_masters.erase(sm);
+}
+
+void HTSimProtoTcp::stripe_finish_recv(int, int, int, int tag) {
+    HTSimProtoTcp* self = s_self;
+    if (!self) return;
+    auto mi = self->stripe_sub2master.find(tag);
+    if (mi == self->stripe_sub2master.end()) return;
+    int& st = stripe_sub_state[tag];
+    if (st & 2) return;
+    st |= 2;
+    self->ocs_flow_cfg.erase(tag);
+    int master = mi->second;
+    if (st == 3) { stripe_sub_state.erase(tag); self->stripe_sub2master.erase(mi); }
+    auto sm = self->stripe_masters.find(master);
+    if (sm == self->stripe_masters.end()) return;
+    StripeMaster& m = sm->second;
+    if (--m.pending_recv == 0 && !m.recv_fwd) {
+        m.recv_fwd = true;
+        HTSimSession::flow_finish_recv(m.src, m.dst, (int)m.total, master);
+    }
+    if (m.sent_fwd && m.recv_fwd) self->stripe_masters.erase(sm);
 }
 
 // Select among panel route candidates per the routing policy, mirroring the
@@ -511,10 +575,90 @@ void HTSimProtoTcp::schedule_htsim_event(FlowInfo flow, int flow_id) {
             ? (uint32_t)flow.src : (uint32_t)panel_perm[flow.src];
         uint32_t pd = (panel_perm.empty() || (size_t)flow.dst >= panel_perm.size())
             ? (uint32_t)flow.dst : (uint32_t)panel_perm[flow.dst];
-        auto rk = ocs_route_kind.find(std::make_tuple((int)ps, (int)pd, (uint64_t)flow.size));
+        // v5 assignment lookup: exact stream first, then any-stream fallback.
+        OcsAsn* asn = NULL;
+        {
+            auto ai = ocs_assigns.find(std::make_tuple((int)ps, (int)pd,
+                                        (uint64_t)flow.size, flow.tag));
+            if (ai == ocs_assigns.end() || ai->second.empty()) {
+                auto lo = ocs_assigns.lower_bound(std::make_tuple((int)ps, (int)pd,
+                                                  (uint64_t)flow.size, INT_MIN));
+                for (; lo != ocs_assigns.end(); ++lo) {
+                    if (std::get<0>(lo->first) != (int)ps ||
+                        std::get<1>(lo->first) != (int)pd ||
+                        std::get<2>(lo->first) != (uint64_t)flow.size) break;
+                    if (!lo->second.empty()) { ai = lo; break; }
+                }
+                if (lo == ocs_assigns.end() ||
+                    std::get<0>(lo->first) != (int)ps) ai = ocs_assigns.end();
+            }
+            if (ai != ocs_assigns.end() && !ai->second.empty()) {
+                static thread_local OcsAsn rec;
+                rec = ai->second.front(); ai->second.pop_front();
+                asn = &rec;
+            }
+        }
+        if (asn && !asn->is_direct && asn->stripes.size() > 1) {
+            // Striped optical transfer: split into per-plane sub-flows; ASTRA
+            // sees completion when the last stripe drains.
+            StripeMaster m; m.src = (int)src; m.dst = (int)dst;
+            m.total = flow.size;
+            m.pending_send = m.pending_recv = (int)asn->stripes.size();
+            stripe_masters[flow_id] = m;
+            for (size_t si = 0; si < asn->stripes.size(); si++) {
+                int pl = asn->stripes[si].first;
+                uint64_t sb = asn->stripes[si].second;
+                int sub = stripe_next_tag++;
+                stripe_sub2master[sub] = flow_id;
+                HTSim::FlowInfo sf = flow; sf.size = sb; sf.tag = flow.tag;
+                // slot lookup for this stripe (same key discipline as below)
+                std::pair<int,int> slot(-1, -1);
+                auto si2 = ocs_slots.find(std::make_tuple((int)ps, (int)pd,
+                                                          sb, flow.tag));
+                if (si2 != ocs_slots.end() && !si2->second.empty()) {
+                    slot = si2->second.front(); si2->second.pop_front();
+                } else {
+                    auto lo = ocs_slots.lower_bound(std::make_tuple((int)ps, (int)pd,
+                                                    sb, INT_MIN));
+                    for (; lo != ocs_slots.end(); ++lo) {
+                        if (std::get<0>(lo->first) != (int)ps ||
+                            std::get<1>(lo->first) != (int)pd ||
+                            std::get<2>(lo->first) != sb) break;
+                        if (!lo->second.empty()) {
+                            slot = lo->second.front(); lo->second.pop_front(); break;
+                        }
+                    }
+                }
+                if (slot.first < 0) {
+                    std::cerr << "OCS plan has no stripe slot for " << ps << "->"
+                              << pd << " bytes " << sb << std::endl;
+                    exit(3);
+                }
+                if (slot.first != pl) {
+                    std::cerr << "stripe plane mismatch: plan says " << pl
+                              << " slot says " << slot.first << std::endl;
+                }
+                ocs_flow_cfg[sub] = slot;
+                if (!(ocs_cur[slot.first] == slot.second && !ocs_dark[slot.first])) {
+                    ocs_held[std::make_pair(slot.first, slot.second)]
+                        .push_back({sf, sub});
+                } else {
+                    ocs_releasing = true; ocs_releasing_plane = slot.first;
+                    schedule_htsim_event(sf, sub);
+                    ocs_releasing = false; ocs_releasing_plane = -2;
+                }
+            }
+            return;   // master flow is virtual; stripes carry the bytes
+        }
         char kind = 'O';
-        if (rk != ocs_route_kind.end() && !rk->second.empty()) {
-            kind = rk->second.front(); rk->second.pop_front();
+        if (asn) {
+            kind = asn->is_direct ? 'D' : 'O';
+        } else {
+            auto rk = ocs_route_kind.find(std::make_tuple((int)ps, (int)pd,
+                                          (uint64_t)flow.size));
+            if (rk != ocs_route_kind.end() && !rk->second.empty()) {
+                kind = rk->second.front(); rk->second.pop_front();
+            }
         }
         if (kind == 'D') {
             ocs_forced_plane = -1;
@@ -697,7 +841,8 @@ void HTSimProtoTcp::schedule_htsim_event(FlowInfo flow, int flow_id) {
         tcpSrc = new TcpSrc(NULL, NULL, eventlist);
         tcpSrc->_debug_srcid = src;
         tcpSrc->_debug_dstid = dst;
-        tcpSrc->astrasim_flow_finish_send_cb = &HTSimSession::flow_finish_send;
+        tcpSrc->astrasim_flow_finish_send_cb = (flow_id >= 900000000)
+            ? &HTSimProtoTcp::stripe_finish_send : &HTSimSession::flow_finish_send;
         tcpSrc->set_flowsize(msg_size);
         if (nocc) {
             // Full window from the first RTT: no slow start, and with no drops
@@ -712,7 +857,8 @@ void HTSimProtoTcp::schedule_htsim_event(FlowInfo flow, int flow_id) {
         tcpSnk = new TcpSink();
         tcpSnk->_debug_srcid = src;
         tcpSnk->_debug_dstid = dst;
-        tcpSnk->astrasim_flow_finish_recv_cb = &HTSimSession::flow_finish_recv;
+        tcpSnk->astrasim_flow_finish_recv_cb = (flow_id >= 900000000)
+            ? &HTSimProtoTcp::stripe_finish_recv : &HTSimSession::flow_finish_recv;
 
         tcpSrc->setName("mtcp_" + ntoa(src) + "_" + ntoa(inter) + "_" + ntoa(dst));
         logfile->writeName(*tcpSrc);
