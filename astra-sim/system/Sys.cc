@@ -407,6 +407,19 @@ bool Sys::initialize_sys(string name) {
             generate_collective_impl_from_chakra(chakra_filepath_str_vec[0]);
         all_gather_implementation_per_dimension.push_back(ci);
     }
+    if (j.contains("reduce-scatter-implementation-chakra")) {
+        vector<string> chakra_filepath_str_vec =
+            j["reduce-scatter-implementation-chakra"];
+        reduce_scatter_implementation_per_dimension.clear();
+        if (chakra_filepath_str_vec.size() != 1) {
+            throw logic_error(
+                "There should be 1 Chakra ET only. In multi-dim collectives, "
+                "that 1 ET file covers all dimensions");
+        }
+        CollectiveImpl* ci =
+            generate_collective_impl_from_chakra(chakra_filepath_str_vec[0]);
+        reduce_scatter_implementation_per_dimension.push_back(ci);
+    }
     if (j.contains("all-reduce-implementation-chakra")) {
         vector<string> chakra_filepath_str_vec =
             j["all-reduce-implementation-chakra"];
