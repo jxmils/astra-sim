@@ -56,7 +56,7 @@ static void print_path(std::ofstream &paths,const Route* rt){
 
 // Impl constructor that loads config for session
 HTSimProtoTcp::HTSimProtoTcp(const HTSim::tm_info* const tm, int argc, char** argv) {
-    eventlist.setEndtime(timeFromSec(4));
+    eventlist.setEndtime(timeFromSec(60));
     c = std::make_unique<Clock>(timeFromSec(50 / 100.), eventlist);
     no_of_nodes = tm->nodes;
     linkspeed = speedFromMbps((double)HOST_NIC);
