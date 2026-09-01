@@ -951,10 +951,10 @@ void HTSimProtoTcp::schedule_htsim_event(FlowInfo flow, int flow_id) {
 
 
     if (algo == COUPLED_EPSILON) {
-        mtcp = new MultipathTcpSrc(algo, eventlist, NULL, epsilon);
+        mtcp = new MultipathTcpSrc(algo, eventlist, NULL, epsilon, false);
     }
     else {
-        mtcp = new MultipathTcpSrc(algo, eventlist, NULL);
+        mtcp = new MultipathTcpSrc(algo, eventlist, NULL, 1000, false);
     }
 
     uint32_t it_sub;
