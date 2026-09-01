@@ -107,7 +107,9 @@ class HTSimProtoTcp final : public HTSimSession::HTSimSessionImpl {
                         int remaining; int started = 0;
                         simtime_picosec max_drain = 0; bool advance_scheduled = false;
                         std::vector<std::pair<int,int>> matching;   // installed pairs
-                        bool force_reconf = false; };
+                        bool force_reconf = false;
+                        bool synchronize = false;
+                        bool drained = false; };
         std::vector<std::vector<OcsCfg>> ocs_cfgs;      // [plane][seq]
         std::vector<int> ocs_cur;                        // installed cfg index
         std::vector<bool> ocs_dark;                      // reconfiguring
@@ -140,6 +142,7 @@ class HTSimProtoTcp final : public HTSimSession::HTSimSessionImpl {
         void ocs_install_next(int plane);
         void ocs_install_next_uncharged(int plane, bool counted);
         bool matching_changed(const OcsCfg& a, const OcsCfg& b);
+        void ocs_advance_after_drain(int plane);
         void ocs_drain_reached(int plane);
         void ocs_note_started(int flow_id, uint64_t bytes, linkspeed_bps plane_rate);
         virtual void flow_done(int flow_id);

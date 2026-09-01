@@ -19,7 +19,8 @@ struct OcsPlanData {
     struct Cfg { int plane; int stream; int round;
                  std::vector<std::tuple<int,int,uint64_t>> circuits;
                  std::vector<std::pair<int,int>> matching;
-                 bool force_reconf = false; };
+                 bool force_reconf = false;
+                 bool synchronize = false; };
     std::vector<Cfg> configurations;
     // legacy view: (src, dst, bytes, is_direct) in file order
     std::vector<std::tuple<int,int,uint64_t,bool>> assignments;

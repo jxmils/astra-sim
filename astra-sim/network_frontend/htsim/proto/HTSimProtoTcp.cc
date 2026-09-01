@@ -334,6 +334,7 @@ void HTSimProtoTcp::load_ocs_plan() {
         OcsCfg oc; oc.round = src.round;
         oc.matching = src.matching;
         oc.force_reconf = src.force_reconf;
+        oc.synchronize = src.synchronize;
         int pl = src.plane;
         int cidx = (int)ocs_cfgs[pl].size();
         for (size_t q = 0; q < src.circuits.size(); q++) {
@@ -424,7 +425,7 @@ static void ocs_drain_cb(void* arg) {
 // (drained their uplinks). Mirroring the analytical OcsSwitch: the circuit can
 // be torn down now -- in-flight propagation completes after removal. Charge
 // T_r only if the next matching differs.
-void HTSimProtoTcp::ocs_drain_reached(int plane) {
+void HTSimProtoTcp::ocs_advance_after_drain(int plane) {
     int cfg = ocs_cur[plane];
     if (cfg + 1 >= (int)ocs_cfgs[plane].size()) return;
     bool changed = ocs_cfgs[plane][cfg + 1].force_reconf ||
@@ -437,6 +438,29 @@ void HTSimProtoTcp::ocs_drain_reached(int plane) {
     } else {
         ocs_install_next_uncharged(plane, changed);
     }
+}
+
+void HTSimProtoTcp::ocs_drain_reached(int plane) {
+    int cfg = ocs_cur[plane];
+    OcsCfg& current = ocs_cfgs[plane][cfg];
+    current.drained = true;
+    if (!current.synchronize) {
+        ocs_advance_after_drain(plane);
+        return;
+    }
+
+    const int round = current.round;
+    std::vector<int> participants;
+    for (int other = 0; other < (int)ocs_cfgs.size(); other++) {
+        int other_cfg = ocs_cur[other];
+        if (other_cfg >= (int)ocs_cfgs[other].size()) continue;
+        OcsCfg& candidate = ocs_cfgs[other][other_cfg];
+        if (candidate.round != round) continue;
+        participants.push_back(other);
+        if (!candidate.synchronize || !candidate.drained) return;
+    }
+    for (size_t index = 0; index < participants.size(); index++)
+        ocs_advance_after_drain(participants[index]);
 }
 
 void HTSimProtoTcp::flow_done(int flow_id) {

@@ -13,15 +13,14 @@ bool load_ocs_plan_file(const std::string& path, OcsPlanData& out,
     out.initial_reconfiguration = p.value("initial_reconfiguration", false);
     int ridx = 0;
     for (auto& round : p["rounds"]) {
-        if (round.value("synchronize", false)) {
-            error = "plan uses synchronized rounds (unsupported)"; return false;
-        }
+        bool synchronize = round.value("synchronize", false);
         for (auto& cfg : round["configurations"]) {
             OcsPlanData::Cfg oc;
             oc.plane = cfg["plane"].get<int>();
             oc.stream = cfg.value("stream", -1);
             oc.round = ridx;
             oc.force_reconf = cfg.value("force_reconfiguration", false);
+            oc.synchronize = synchronize;
             for (auto& ci : cfg["circuits"]) {
                 uint64_t b = ci["bytes"].get<uint64_t>();
                 oc.circuits.push_back(std::make_tuple(
