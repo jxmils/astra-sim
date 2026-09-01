@@ -452,10 +452,19 @@ void HTSimProtoTcp::ocs_drain_reached(int plane) {
     const int round = current.round;
     std::vector<int> participants;
     for (int other = 0; other < (int)ocs_cfgs.size(); other++) {
+        bool participates = false;
+        for (size_t index = 0; index < ocs_cfgs[other].size(); index++) {
+            const OcsCfg& configured = ocs_cfgs[other][index];
+            if (configured.round == round && configured.synchronize) {
+                participates = true;
+                break;
+            }
+        }
+        if (!participates) continue;
         int other_cfg = ocs_cur[other];
-        if (other_cfg >= (int)ocs_cfgs[other].size()) continue;
+        if (other_cfg >= (int)ocs_cfgs[other].size()) return;
         OcsCfg& candidate = ocs_cfgs[other][other_cfg];
-        if (candidate.round != round) continue;
+        if (candidate.round != round) return;
         participants.push_back(other);
         if (!candidate.synchronize || !candidate.drained) return;
     }
