@@ -108,7 +108,8 @@ class HTSimProtoTcp final : public HTSimSession::HTSimSessionImpl {
                         simtime_picosec max_drain = 0; bool advance_scheduled = false;
                         std::vector<std::pair<int,int>> matching;   // installed pairs
                         bool force_reconf = false;
-                        bool synchronize = false;
+                         int phase = 0;  // 1 fold, 2 unfold
+                         bool synchronize = false;
                         bool drained = false; };
         std::vector<std::vector<OcsCfg>> ocs_cfgs;      // [plane][seq]
         std::vector<int> ocs_cur;                        // installed cfg index
@@ -119,7 +120,8 @@ class HTSimProtoTcp final : public HTSimSession::HTSimSessionImpl {
         // v5 assignments: (src,dst,bytes,stream) -> FIFO of records; an OCS
         // record with >1 stripes splits the logical transfer across planes.
         struct OcsAsn { bool is_direct;
-                        std::vector<std::pair<int,uint64_t>> stripes; };
+                        std::vector<std::pair<int,uint64_t>> stripes;
+                        int phase = 0; };
         std::map<std::tuple<int,int,uint64_t,int>, std::deque<OcsAsn>> ocs_assigns;
         // striped-transfer master accounting: ASTRA sees one flow id; each
         // stripe is an internal sub-flow with a synthetic negative tag.
@@ -141,6 +143,18 @@ class HTSimProtoTcp final : public HTSimSession::HTSimSessionImpl {
         void load_ocs_plan();
         void ocs_install_next(int plane);
         void ocs_install_next_uncharged(int plane, bool counted);
+        // Per-configuration install/drain timestamps (ns), for causal-depth
+        // analysis of tiled schedules.
+        std::map<std::pair<int,int>, std::pair<double,double>> ocs_cfg_times;
+        // Owner reduction service: busy-until per rank. Fold arrivals add
+        // bytes/rate of service demand; unfold departures wait for it.
+        std::vector<double> red_busy_until_ns;
+        std::string panel_graphfile;       // -graph: Base::Custom edge list
+        double ocs_red_Bps = 0.0;          // 0 = unmodelled (infinite)
+        double ocs_red_wait_ns = 0.0;      // total unfold delay charged
+        std::vector<char> red_gate_done;   // per plane: gate already applied
+        std::map<int, std::pair<int,uint64_t>> red_flow_dst;
+        std::map<int, int> red_flow_phase;
         bool matching_changed(const OcsCfg& a, const OcsCfg& b);
         void ocs_advance_after_drain(int plane);
         void ocs_drain_reached(int plane);
@@ -165,7 +179,8 @@ class HTSimProtoTcp final : public HTSimSession::HTSimSessionImpl {
         // {2,3,6,7} (complete K4s via ring D0 + planes P0,P1) and its dim-1
         // pairs land on the alternate ring matching D1.
         std::vector<int> panel_perm;
-        std::vector<int> panel_extents;   // per-dim base extents ("-extents 4x8x8")
+        std::vector<int> panel_extents;
+        bool panel_nolog = false;   // suppress per-queue loggers ("-nolog")   // per-dim base extents ("-extents 4x8x8")
         double direct_preference_factor = 1.10;
         // telemetry: (is_plane, hops) -> {messages, payload_bytes}
         std::map<std::pair<int,int>, std::pair<uint64_t,uint64_t>> route_telemetry;

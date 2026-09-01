@@ -1,6 +1,7 @@
 #include "HTSimProtoTcp.hh"
 #include "HTSimSession.hh"
 #include "OcsPlanLoader.hh"
+#include <algorithm>
 #include <climits>
 #include <set>
 
@@ -100,6 +101,8 @@ HTSimProtoTcp::HTSimProtoTcp(const HTSim::tm_info* const tm, int argc, char** ar
                 std::cerr << "Unknown -permute " << argv[i+1] << std::endl; exit(1);
             }
             i++;
+        } else if (!strcmp(argv[i],"-nolog")){
+            panel_nolog = true;
         } else if (!strcmp(argv[i],"-extents")){
             panel_extents.clear();
             const char* s = argv[i+1];
@@ -138,6 +141,14 @@ HTSimProtoTcp::HTSimProtoTcp(const HTSim::tm_info* const tm, int argc, char** ar
             i++;
         } else if (!strcmp(argv[i],"-ocs")){
             ocs_mode = true;
+        } else if (!strcmp(argv[i],"-graph")){
+            panel_graphfile = argv[i+1];
+            i++;
+        } else if (!strcmp(argv[i],"-redGBps")){
+            // Owner reduction service rate (decimal GB/s of incoming
+            // partial bytes a rank can reduce). 0/absent = unmodelled.
+            ocs_red_Bps = atof(argv[i+1]) * 1e9;
+            i++;
         } else if (!strcmp(argv[i],"-reconfNs")){
             ocs_reconf = timeFromNs(atof(argv[i+1]));
             i++;
@@ -231,12 +242,21 @@ if (!panel_kind.empty()) {
     else if (panel_kind == "hybrid") { b = PanelTopology::Base::Torus2D; if (panel_planes == 0) panel_planes = 2; }
     else if (panel_kind == "fullswitch") { b = PanelTopology::Base::None; if (panel_planes == 0) panel_planes = 6; }
     else if (panel_kind == "ringrows") { b = PanelTopology::Base::RingRows; if (panel_planes == 0) panel_planes = 2; }
+    else if (panel_kind == "custom") {
+        // arbitrary physical graph from -graph; may contain non-endpoint
+        // devices (HammingMesh row/column switches), routed shortest-path
+        b = PanelTopology::Base::Custom;
+        if (panel_graphfile.empty()) {
+            std::cerr << "ERROR: -panel custom requires -graph <file>" << std::endl;
+            exit(2);
+        }
+    }
     else { std::cerr << "Unknown -panel kind " << panel_kind << std::endl; exit(1); }
     panel_top = new PanelTopology(no_of_nodes, b, panel_planes,
                                   panel_link_gibps, panel_latency,
                                   panel_plane_gibps, panel_plane_latency,
                                   memFromPkt(queuesize_pkts), logfile.get(), &eventlist,
-                                  panel_extents);
+                                  panel_extents, panel_nolog, panel_graphfile);
     if (ocs_plan_mode) {
         if (!panel_top) { std::cerr << "-ocsplan requires -panel" << std::endl; exit(1); }
         load_ocs_plan();
@@ -334,6 +354,7 @@ void HTSimProtoTcp::load_ocs_plan() {
         OcsCfg oc; oc.round = src.round;
         oc.matching = src.matching;
         oc.force_reconf = src.force_reconf;
+        oc.phase = src.phase;
         oc.synchronize = src.synchronize;
         int pl = src.plane;
         int cidx = (int)ocs_cfgs[pl].size();
@@ -356,6 +377,7 @@ void HTSimProtoTcp::load_ocs_plan() {
     for (size_t k = 0; k < plan.assignments_full.size(); k++) {
         const OcsPlanData::Asn& a = plan.assignments_full[k];
         OcsAsn rec; rec.is_direct = a.is_direct; rec.stripes = a.stripes;
+        rec.phase = a.phase;
         ocs_assigns[std::make_tuple(a.src, a.dst, a.bytes, a.stream)]
             .push_back(rec);
     }
@@ -366,14 +388,43 @@ void HTSimProtoTcp::load_ocs_plan() {
               << " scheduled_bytes " << ocs_plan_scheduled << std::endl;
 }
 
+static void ocs_advance_cb(void* arg);   // defined below
+
 void HTSimProtoTcp::ocs_install_next(int plane) {
     ocs_install_next_uncharged(plane, false);   // reconfig counted at drain time
 }
 
 void HTSimProtoTcp::ocs_install_next_uncharged(int plane, bool /*counted*/) {
+    // red gate: hold the first unfold configuration on this plane until
+    // every owner's reduction engine has drained the partials it must
+    // combine. Applied AT MOST ONCE per plane: re-checking on each retry
+    // lets a still-advancing ready time reschedule in a tight loop, which
+    // exhausts the event queue (observed as std::bad_alloc).
+    if (ocs_red_Bps > 0.0) {
+        if ((int)red_gate_done.size() <= plane) red_gate_done.resize(plane + 1, 0);
+        int nxt = ocs_cur[plane] + 1;
+        if (!red_gate_done[plane] && nxt < (int)ocs_cfgs[plane].size() &&
+            ocs_cfgs[plane][nxt].phase == 2) {
+            double now_ns = timeAsNs(eventlist.now()), ready = 0.0;
+            for (size_t r = 0; r < red_busy_until_ns.size(); r++)
+                if (red_busy_until_ns[r] > ready) ready = red_busy_until_ns[r];
+            red_gate_done[plane] = 1;
+            if (ready > now_ns + 1.0) {
+                ocs_red_wait_ns += (ready - now_ns);
+                ocs_dark[plane] = true;
+                std::pair<HTSimProtoTcp*, int>* arg =
+                    new std::pair<HTSimProtoTcp*, int>(this, plane);
+                HTSimSession::instance().schedule_astra_event(
+                    ready - now_ns, &ocs_advance_cb, arg);
+                return;
+            }
+        }
+    }
     ocs_dark[plane] = false;
     ocs_cur[plane]++;
     ocs_plan_rounds_done++;
+    ocs_cfg_times[std::make_pair(plane, ocs_cur[plane])].first =
+        timeAsNs(eventlist.now());
     auto key = std::make_pair(plane, ocs_cur[plane]);
     auto it = ocs_held.find(key);
     if (it != ocs_held.end()) {
@@ -443,6 +494,7 @@ void HTSimProtoTcp::ocs_advance_after_drain(int plane) {
 void HTSimProtoTcp::ocs_drain_reached(int plane) {
     int cfg = ocs_cur[plane];
     OcsCfg& current = ocs_cfgs[plane][cfg];
+    ocs_cfg_times[std::make_pair(plane, cfg)].second = timeAsNs(eventlist.now());
     current.drained = true;
     if (!current.synchronize) {
         ocs_advance_after_drain(plane);
@@ -587,6 +639,23 @@ void HTSimProtoTcp::ocs_note_started(int flow_id, uint64_t bytes,
         + (simtime_picosec)((double)bytes * 8.0 * 1e12 / (double)plane_rate)
         + (simtime_picosec)(2.0 * 1500.0 * 8.0 * 1e12 / (double)plane_rate);
     if (drain > oc.max_drain) oc.max_drain = drain;
+    // Owner reduction service: a fold shard becomes reducible when it
+    // finishes arriving; the owner's engine then consumes it at
+    // ocs_red_Bps. Service is a busy-until ledger per owner, so
+    // reduction overlaps arrivals rather than starting after them.
+    if (ocs_red_Bps > 0.0 && oc.phase == 1) {
+        std::map<int, std::pair<int,uint64_t>>::iterator di =
+            red_flow_dst.find(flow_id);
+        if (di != red_flow_dst.end()) {
+            int owner = di->second.first;
+            if ((int)red_busy_until_ns.size() <= owner)
+                red_busy_until_ns.resize(owner + 1, 0.0);
+            double arrive_ns = timeAsNs(drain);
+            double start_ns = std::max(red_busy_until_ns[owner], arrive_ns);
+            red_busy_until_ns[owner] =
+                start_ns + (double)bytes / ocs_red_Bps * 1e9;
+        }
+    }
     if (oc.started == (int)oc.circuits.size() && !oc.advance_scheduled &&
         ocs_cur[pl] == cfgi) {
         oc.advance_scheduled = true;
@@ -698,6 +767,7 @@ void HTSimProtoTcp::schedule_htsim_event(FlowInfo flow, int flow_id) {
         char kind = 'O';
         if (asn) {
             kind = asn->is_direct ? 'D' : 'O';
+            red_flow_phase[flow_id] = asn->phase;
         } else {
             auto rk = ocs_route_kind.find(std::make_tuple((int)ps, (int)pd,
                                           (uint64_t)flow.size));
@@ -732,6 +802,9 @@ void HTSimProtoTcp::schedule_htsim_event(FlowInfo flow, int flow_id) {
                 exit(3);
             }
             int pl = slot.first, cfgi = slot.second;
+            // Record before the held-return below: held flows still
+            // deliver partials and must charge the owner's reducer.
+            red_flow_dst[flow_id] = std::make_pair((int)pd, (uint64_t)flow.size);
             if (!(ocs_cur[pl] == cfgi && !ocs_dark[pl])) {
                 if (cfgi < ocs_cur[pl]) {
                     std::cerr << "Warning: flow for past config plane " << pl
@@ -775,6 +848,20 @@ void HTSimProtoTcp::schedule_htsim_event(FlowInfo flow, int flow_id) {
             if (!panel_choice->is_plane) {
                 for (size_t k = 0; k < panel_choice->hop_queues.size(); k++)
                     panel_choice->hop_queues[k]->reserve_bytes(msg_size);
+                // direct fold shard: charge the owner's reduction engine
+                std::map<int,int>::iterator pi = red_flow_phase.find(flow_id);
+                if (ocs_red_Bps > 0.0 && pi != red_flow_phase.end() &&
+                    pi->second == 1 && !panel_choice->hop_queues.empty()) {
+                    double rate = (double)panel_choice->hop_queues[0]->link_bitrate()
+                                  / 8.0;
+                    if ((int)red_busy_until_ns.size() <= (int)phys_dst)
+                        red_busy_until_ns.resize(phys_dst + 1, 0.0);
+                    double arrive = timeAsNs(eventlist.now())
+                                    + (double)msg_size / rate * 1e9;
+                    double st = std::max(red_busy_until_ns[phys_dst], arrive);
+                    red_busy_until_ns[phys_dst] =
+                        st + (double)msg_size / ocs_red_Bps * 1e9;
+                }
             }
         } else {
         simtime_picosec now_ps = eventlist.now();
@@ -1046,6 +1133,18 @@ void HTSimProtoTcp::finish() {
                   << " propagation_ns=0 serialization_ns=0" << std::endl;
     }
     if (ocs_plan_mode) {
+        for (std::map<std::pair<int,int>, std::pair<double,double>>::iterator
+                 ci = ocs_cfg_times.begin(); ci != ocs_cfg_times.end(); ++ci) {
+            int pl = ci->first.first, cf = ci->first.second;
+            int ph = (cf >= 0 && cf < (int)ocs_cfgs[pl].size())
+                         ? ocs_cfgs[pl][cf].phase : 0;
+            std::cout << "OCS_CFG plane=" << pl << " cfg=" << cf
+                      << " phase=" << ph
+                      << " install_ns=" << ci->second.first
+                      << " drain_ns=" << ci->second.second << std::endl;
+        }
+        std::cout << "OCS_RED red_GBps=" << (ocs_red_Bps / 1e9)
+                  << " unfold_wait_ns=" << ocs_red_wait_ns << std::endl;
         std::cout << "OCS_PLAN_REPLAY reconfigurations=" << ocs_reconfigs
                   << " rounds_advanced=" << ocs_plan_rounds_done
                   << " scheduled_bytes=" << ocs_plan_scheduled

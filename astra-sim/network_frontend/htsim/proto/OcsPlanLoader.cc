@@ -2,6 +2,12 @@
 #include <json/json.hpp>
 #include <fstream>
 
+static int phase_of(const nlohmann::json& j) {
+    if (!j.contains("phase")) return 0;
+    std::string s = j["phase"].get<std::string>();
+    return s == "fold" ? 1 : (s == "unfold" ? 2 : 0);
+}
+
 bool load_ocs_plan_file(const std::string& path, OcsPlanData& out,
                         std::string& error) {
     std::ifstream f(path);
@@ -21,6 +27,7 @@ bool load_ocs_plan_file(const std::string& path, OcsPlanData& out,
             oc.round = ridx;
             oc.force_reconf = cfg.value("force_reconfiguration", false);
             oc.synchronize = synchronize;
+            oc.phase = phase_of(cfg);
             for (auto& ci : cfg["circuits"]) {
                 uint64_t b = ci["bytes"].get<uint64_t>();
                 oc.circuits.push_back(std::make_tuple(
@@ -53,6 +60,7 @@ bool load_ocs_plan_file(const std::string& path, OcsPlanData& out,
         an.bytes = a["bytes"].get<uint64_t>();
         an.stream = a.value("stream", -1);
         an.is_direct = direct;
+        an.phase = phase_of(a);
         if (!direct && a.contains("stripes")) {
             for (auto& s : a["stripes"])
                 an.stripes.push_back({s["plane"].get<int>(),

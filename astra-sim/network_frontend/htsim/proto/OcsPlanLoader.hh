@@ -20,13 +20,16 @@ struct OcsPlanData {
                  std::vector<std::tuple<int,int,uint64_t>> circuits;
                  std::vector<std::pair<int,int>> matching;
                  bool force_reconf = false;
-                 bool synchronize = false; };
+                  bool synchronize = false;
+                  // 0 = unspecified, 1 = fold (into owners), 2 = unfold
+                  int phase = 0; };
     std::vector<Cfg> configurations;
     // legacy view: (src, dst, bytes, is_direct) in file order
     std::vector<std::tuple<int,int,uint64_t,bool>> assignments;
     // full v5 records: stream identity and per-plane byte stripes.
     struct Asn { int src; int dst; uint64_t bytes; int stream; bool is_direct;
-                 std::vector<std::pair<int,uint64_t>> stripes; };
+                 std::vector<std::pair<int,uint64_t>> stripes;
+                 int phase = 0; };
     std::vector<Asn> assignments_full;
 };
 
