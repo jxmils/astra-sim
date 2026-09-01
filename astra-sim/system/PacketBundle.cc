@@ -63,10 +63,17 @@ void PacketBundle::call(EventType event, CallData* data) {
                                 this->delay);
         return;
     }
-    Tick current = Sys::boostedTick();
-    for (auto& packet : locked_packets) {
-        packet->ready_time = current;
-    }
+    // Memory-safety fix (timing-neutral). locked_packets holds raw pointers
+    // into the owning algorithm's std::list<MyPacket> (Ring, HalvingDoubling).
+    // That list's front is popped by reduce() whenever *any* bundle of the
+    // stream completes, not necessarily this bundle's own packet, so when two
+    // bundles complete out of insertion order (a processed packet followed by
+    // a zero-latency one) the pointers held here are dangling and the former
+    //     packet->ready_time = Sys::boostedTick();
+    // was a write into freed memory (glibc: "corrupted size vs. prev_size";
+    // ASan: heap-use-after-free, PacketBundle.cc <- Ring::reduce pop_front).
+    // MyPacket::ready_time has no reader anywhere, so dropping the write
+    // changes no event, no send, and no timestamp.
     stream->call(EventType::General, data);
     delete this;
 }
