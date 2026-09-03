@@ -87,6 +87,19 @@ HTSimProtoTcp::HTSimProtoTcp(const HTSim::tm_info* const tm, int argc, char** ar
             if (!strcmp(argv[i+1],"qtp8")) {
                 static const int qtp8[8] = {0,1,4,5,7,2,3,6};
                 panel_perm.assign(qtp8, qtp8+8);
+            } else if (!strcmp(argv[i+1],"qtp_rows8")) {
+                // Repeat the QTP-8 embedding independently in every physical
+                // eight-node row. This supports RingRows at any N divisible
+                // by eight while preserving the validated quartet/pair map.
+                if (no_of_nodes % 8 != 0) {
+                    std::cerr << "qtp_rows8 requires nodes divisible by 8"
+                              << std::endl;
+                    exit(1);
+                }
+                static const int qtp8m[8] = {0,1,4,5,7,2,3,6};
+                panel_perm.assign(no_of_nodes, 0);
+                for (int r = 0; r < no_of_nodes; r++)
+                    panel_perm[r] = (r / 8) * 8 + qtp8m[r % 8];
             } else if (!strcmp(argv[i+1],"qtp64")) {
                 // Row x column extension of qtp8 onto the 8x8 grid:
                 // logical r = a + 4b + 8c + 32d  (dims [4,2,4,2]);
