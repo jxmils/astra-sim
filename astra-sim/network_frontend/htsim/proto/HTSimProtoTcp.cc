@@ -721,6 +721,7 @@ void HTSimProtoTcp::schedule_htsim_event(FlowInfo flow, int flow_id) {
         // Plan-v6 identity is authoritative when present. Tuple lookup remains
         // temporarily available for Finding 3's separate fail-closed repair.
         OcsAsn* asn = NULL;
+        bool exact_assignment_match = false;
         {
             static thread_local OcsAsn rec;
             OcsPlanData::Asn exact_record;
@@ -735,6 +736,7 @@ void HTSimProtoTcp::schedule_htsim_event(FlowInfo flow, int flow_id) {
                         stripe.stripe_uid, stripe.plane, stripe.bytes});
                 }
                 asn = &rec;
+                exact_assignment_match = true;
             } else {
                 auto ai = ocs_assigns.find(std::make_tuple((int)ps, (int)pd,
                                             (uint64_t)flow.size, flow.tag));
@@ -772,7 +774,8 @@ void HTSimProtoTcp::schedule_htsim_event(FlowInfo flow, int flow_id) {
                 HTSim::FlowInfo sf = flow; sf.size = sb; sf.tag = flow.tag;
                 sf.flow_uid = stripe_uid;
                 std::pair<int,int> slot(-1, -1);
-                consume_ocs_stripe_slot(ocs_identity, stripe_uid, slot);
+                bool exact_stripe_match = consume_ocs_stripe_slot(
+                    ocs_identity, stripe_uid, slot);
                 if (slot.first < 0) {
                     auto si2 = ocs_slots.find(std::make_tuple((int)ps, (int)pd,
                                                               sb, flow.tag));
@@ -805,6 +808,9 @@ void HTSimProtoTcp::schedule_htsim_event(FlowInfo flow, int flow_id) {
                           << " stripe_uid=" << stripe_uid
                           << " plane=" << slot.first
                           << " round=" << ocs_cfgs[slot.first][slot.second].round
+                          << " lookup="
+                          << ((exact_assignment_match && exact_stripe_match)
+                                  ? "exact" : "legacy")
                           << std::endl;
                 ocs_flow_cfg[sub] = slot;
                 if (!(ocs_cur[slot.first] == slot.second && !ocs_dark[slot.first])) {
@@ -833,14 +839,19 @@ void HTSimProtoTcp::schedule_htsim_event(FlowInfo flow, int flow_id) {
             ocs_forced_plane = -1;
             if (asn) {
                 std::cout << "OCS_IDENTITY flow_uid=" << asn->flow_uid
-                          << " stripe_uid=- plane=-1 round=-1" << std::endl;
+                          << " stripe_uid=- plane=-1 round=-1"
+                          << " lookup="
+                          << (exact_assignment_match ? "exact" : "legacy")
+                          << std::endl;
             }
         } else {
             std::pair<int,int> slot(-1, -1);
             std::string stripe_uid;
+            bool exact_stripe_match = false;
             if (asn && asn->stripes.size() == 1) {
                 stripe_uid = asn->stripes[0].stripe_uid;
-                consume_ocs_stripe_slot(ocs_identity, stripe_uid, slot);
+                exact_stripe_match = consume_ocs_stripe_slot(
+                    ocs_identity, stripe_uid, slot);
             }
             if (slot.first < 0) {
                 auto si = ocs_slots.find(std::make_tuple((int)ps, (int)pd,
@@ -872,7 +883,11 @@ void HTSimProtoTcp::schedule_htsim_event(FlowInfo flow, int flow_id) {
                 std::cout << "OCS_IDENTITY flow_uid=" << asn->flow_uid
                           << " stripe_uid=" << stripe_uid
                           << " plane=" << pl
-                          << " round=" << ocs_cfgs[pl][cfgi].round << std::endl;
+                          << " round=" << ocs_cfgs[pl][cfgi].round
+                          << " lookup="
+                          << ((exact_assignment_match && exact_stripe_match)
+                                  ? "exact" : "legacy")
+                          << std::endl;
             }
             // Record before the held-return below: held flows still
             // deliver partials and must charge the owner's reducer.
