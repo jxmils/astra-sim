@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <climits>
 #include <set>
+#include <sstream>
 
 // Adapted from HTSim main_tcp.cpp
 
@@ -590,20 +591,23 @@ void HTSimProtoTcp::ocs_print_config_drain(
     const bool changed = has_next &&
         (ocs_cfgs[plane][configuration + 1].force_reconf ||
          matching_changed(current, ocs_cfgs[plane][configuration + 1]));
-    std::cout << "OCS_CONFIG_DRAIN"
-              << " plane=" << plane
-              << " config=" << configuration
-              << " round=" << current.round
-              << " expected_stripes=" << current.circuits.size()
-              << " started_stripes=" << current.started
-              << " completed_stripes=" << current.completed
-              << " last_start_ns=" << timeAsNs(current.last_start)
-              << " first_complete_ns=" << timeAsNs(current.first_complete)
-              << " last_complete_ns=" << timeAsNs(current.last_complete)
-              << " advance_ns=" << timeAsNs(advance_time)
-              << " reconfiguration_ns="
-              << (changed ? ocs_plan_reconf_ns : 0.0)
-              << " status=PASS" << std::endl;
+    std::ostringstream record;
+    record << "OCS_CONFIG_DRAIN"
+           << " plane=" << plane
+           << " config=" << configuration
+           << " round=" << current.round
+           << " expected_stripes=" << current.circuits.size()
+           << " started_stripes=" << current.started
+           << " completed_stripes=" << current.completed
+           << " last_start_ns=" << timeAsNs(current.last_start)
+           << " first_complete_ns=" << timeAsNs(current.first_complete)
+           << " last_complete_ns=" << timeAsNs(current.last_complete)
+           << " advance_ns=" << timeAsNs(advance_time)
+           << " reconfiguration_ns="
+           << (changed ? ocs_plan_reconf_ns : 0.0)
+           << " status=PASS\n";
+    std::cout << record.str();
+    std::cout.flush();
     current.drain_reported = true;
     ocs_config_drain_records++;
 }
