@@ -39,7 +39,7 @@ int main(int argc, char* argv[]) {
         "htsim-proto", "HTSim Network Protocol [tcp]",
         cxxopts::value<HTSimProto>()->default_value("tcp"))(
         "chakra-send-admission", "Explicit Chakra send admission [serialized|concurrent]",
-        cxxopts::value<std::string>()->default_value("serialized"))(
+        cxxopts::value<std::string>())(
         "print-backend-capabilities", "Print backend capabilities and exit",
         cxxopts::value<bool>()->default_value("false"));
     cmd_line_parser.parse(argc, argv);
