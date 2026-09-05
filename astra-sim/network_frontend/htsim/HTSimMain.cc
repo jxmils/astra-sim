@@ -33,7 +33,8 @@ void print_backend_capabilities(const std::string& admission) {
         << " plan_lookup=exact"
         << " plan_fail_open=0"
         << " plan_end_audit=1"
-        << " initial_ocs_state=plan_controlled"
+        << " initial_ocs_state=cold"
+        << " initial_ocs_reconfiguration=uniform"
         << std::endl;
 }
 }  // namespace

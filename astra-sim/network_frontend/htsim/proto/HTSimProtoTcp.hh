@@ -93,6 +93,7 @@ class HTSimProtoTcp final : public HTSimSession::HTSimSessionImpl {
         std::vector<std::vector<int>> ocs_up_peer, ocs_down_peer;
         std::vector<std::vector<simtime_picosec>> ocs_up_ready, ocs_down_ready;
         std::vector<std::vector<uint32_t>> ocs_up_active, ocs_down_active;
+        std::vector<bool> ocs_dynamic_plane_configured;
         struct DynamicLease {
             int plane;
             uint32_t src;
@@ -113,6 +114,7 @@ class HTSimProtoTcp final : public HTSimSession::HTSimSessionImpl {
         uint64_t ocs_dynamic_retry_attempts = 0;
         uint64_t ocs_dynamic_estimated_release_events = 0;
         uint64_t ocs_dynamic_premature_reconfigs = 0;
+        uint64_t ocs_dynamic_initial_configurations = 0;
         void ocs_release_dynamic_lease(int flow_id);
         void ocs_retry_dynamic_waiters();
         uint64_t ocs_reconfigs = 0, ocs_reuses = 0;
@@ -142,8 +144,21 @@ class HTSimProtoTcp final : public HTSimSession::HTSimSessionImpl {
                         bool drained = false;
                         bool drain_reported = false; };
         std::vector<std::vector<OcsCfg>> ocs_cfgs;      // [plane][seq]
-        std::vector<int> ocs_cur;                        // installed cfg index
+        // Configuration zero is the first requested configuration, but it is
+        // not installed until its cold-start delay has elapsed.
+        std::vector<int> ocs_cur;
         std::vector<bool> ocs_dark;                      // reconfiguring
+        struct OcsColdWaiter { HTSim::FlowInfo flow; int flow_id; };
+        std::deque<OcsColdWaiter> ocs_cold_waiters;
+        std::set<int> ocs_cold_queued_flow_ids;
+        std::set<std::string> ocs_cold_queued_flow_uids;
+        std::vector<bool> ocs_initial_requested;
+        std::vector<bool> ocs_initial_active;
+        std::vector<simtime_picosec> ocs_initial_request_time;
+        std::vector<simtime_picosec> ocs_initial_ready_time;
+        uint64_t ocs_expected_initial_configurations = 0;
+        uint64_t ocs_initial_configuration_requests = 0;
+        uint64_t ocs_initial_configuration_activations = 0;
         OcsPlanIdentityIndex ocs_identity;
         std::set<std::string> ocs_expected_flows;
         std::set<std::string> ocs_expected_stripes;
@@ -173,6 +188,11 @@ class HTSimProtoTcp final : public HTSimSession::HTSimSessionImpl {
         void load_ocs_plan();
         void ocs_install_next(int plane);
         void ocs_install_next_uncharged(int plane, bool counted);
+        void ocs_activate_initial_configuration(int plane);
+        void ocs_note_dynamic_initial_activation(
+            int plane, simtime_picosec request_time,
+            simtime_picosec ready_time);
+        void ocs_retry_cold_waiters();
         // Per-configuration install/drain timestamps (ns), for causal-depth
         // analysis of tiled schedules.
         std::map<std::pair<int,int>, std::pair<double,double>> ocs_cfg_times;
@@ -200,6 +220,8 @@ class HTSimProtoTcp final : public HTSimSession::HTSimSessionImpl {
             const std::pair<int, int>& slot,
             uint32_t physical_source,
             uint32_t physical_destination);
+        bool ocs_defer_for_initial_configuration(
+            const HTSim::FlowInfo& flow, int flow_id);
         virtual void flow_done(int flow_id);
         simtime_picosec ocs_wait_total = 0;
         uint64_t ocs_expected_configurations = 0;
