@@ -742,7 +742,6 @@ void HTSimProtoTcp::stripe_finish_recv(int, int, int, int tag) {
     int& st = stripe_sub_state[tag];
     if (st & 2) return;
     st |= 2;
-    self->ocs_flow_cfg.erase(tag);
     int master = mi->second;
     if (st == 3) { stripe_sub_state.erase(tag); self->stripe_sub2master.erase(mi); }
     auto sm = self->stripe_masters.find(master);
