@@ -125,7 +125,12 @@ HTSimProtoTcp::HTSimProtoTcp(const HTSim::tm_info* const tm, int argc, char** ar
             i++;
         } else if (!strcmp(argv[i],"-latencyNs")){
             panel_latency = timeFromNs(atof(argv[i+1]));
-            panel_plane_latency = panel_latency;
+            if (!plane_latency_set) panel_plane_latency = panel_latency;
+            i++;
+        } else if (!strcmp(argv[i],"-planeLatencyNs")){
+            // whole accelerator-to-accelerator traversal over one plane; the up and down pipes each get half
+            panel_plane_latency = timeFromNs(atof(argv[i+1]) / 2.0);
+            plane_latency_set = true;
             i++;
         } else if (!strcmp(argv[i],"-policy")){
             if (!strcmp(argv[i+1],"static")) panel_policy = PanelPolicy::Static;
@@ -232,7 +237,7 @@ HTSimProtoTcp::HTSimProtoTcp(const HTSim::tm_info* const tm, int argc, char** ar
 #ifdef FAT_TREE
 
 if (!panel_kind.empty()) {
-    if (panel_latency == 0) { panel_latency = timeFromNs(1000.0); panel_plane_latency = panel_latency; }
+    if (panel_latency == 0) { panel_latency = timeFromNs(1000.0); if (!plane_latency_set) panel_plane_latency = panel_latency; }
     PanelTopology::Base b;
     if (panel_kind == "ring1d") { b = PanelTopology::Base::Ring1D; if (panel_planes == 0) panel_planes = 2; }
     else if (panel_kind == "mesh2d") { b = PanelTopology::Base::Mesh2D; }

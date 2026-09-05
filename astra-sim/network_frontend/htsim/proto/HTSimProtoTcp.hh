@@ -171,6 +171,7 @@ class HTSimProtoTcp final : public HTSimSession::HTSimSessionImpl {
         double panel_plane_gibps = 200.0;
         simtime_picosec panel_latency = 0;    // set at parse (default 1000 ns)
         simtime_picosec panel_plane_latency = 0;
+        bool plane_latency_set = false;   // -planeLatencyNs given
         int panel_planes = 0;
         std::string panel_kind;
         // Logical->physical rank permutation (collective embedding lever).
