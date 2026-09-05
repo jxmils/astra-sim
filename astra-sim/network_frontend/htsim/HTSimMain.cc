@@ -24,8 +24,10 @@ void print_backend_capabilities(const std::string& admission) {
         << " concurrent_chakra_sends=1"
         << " chakra_send_admission=" << admission
         << " ocs_advance=estimated_serialization_drain"
-        << " ocs_plan_schema=5"
-        << " plan_lookup=legacy_fallback"
+        << " ocs_plan_schema=6"
+        << " exact_flow_identity=1"
+        << " exact_stripe_identity=1"
+        << " plan_lookup=exact_identity_preferred"
         << " plan_fail_open=1"
         << " initial_ocs_state=plan_controlled"
         << std::endl;

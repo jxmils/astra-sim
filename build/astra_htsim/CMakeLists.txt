@@ -18,6 +18,7 @@ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-error")
 
 # Setup project
 project(AstraSim_HTSim)
+include(CTest)
 
 # Compilation target
 set(BUILDTARGET "all" CACHE STRING "Compilation target ([all])")

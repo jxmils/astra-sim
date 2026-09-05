@@ -34,6 +34,16 @@ void ChakraImpl::issue(shared_ptr<Chakra::ETFeederNode> node) {
         sehd->wlhd = new WorkloadLayerHandlerData;
         sehd->wlhd->node_id = node->id();
         sehd->event = EventType::PacketSent;
+        if (node->has_other_attr("flow_uid")) {
+            const ChakraProtoMsg::AttributeProto& flow_uid =
+                node->get_other_attr("flow_uid");
+            if (!flow_uid.has_string_val() || flow_uid.string_val().empty()) {
+                std::cerr << "flow_uid must be a nonempty string attribute"
+                          << std::endl;
+                std::exit(EXIT_FAILURE);
+            }
+            snd_req.flow_uid = flow_uid.string_val();
+        }
         stream->owner->front_end_sim_send(
             0, Sys::dummy_data,
             // Note that we're using the comm size as hardcoded in the Impl

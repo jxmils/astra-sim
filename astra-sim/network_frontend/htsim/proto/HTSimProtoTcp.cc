@@ -362,6 +362,11 @@ void HTSimProtoTcp::load_ocs_plan() {
     ocs_cfgs.assign(plan.planes, {});
     ocs_cur.assign(plan.planes, 0);
     ocs_dark.assign(plan.planes, false);
+    std::string identity_error;
+    if (!build_ocs_plan_identity_index(plan, ocs_identity, identity_error)) {
+        std::cerr << "OCS plan identity index failed: " << identity_error
+                  << std::endl; exit(1);
+    }
     for (size_t k = 0; k < plan.configurations.size(); k++) {
         const OcsPlanData::Cfg& src = plan.configurations[k];
         OcsCfg oc; oc.round = src.round;
@@ -372,10 +377,14 @@ void HTSimProtoTcp::load_ocs_plan() {
         int pl = src.plane;
         int cidx = (int)ocs_cfgs[pl].size();
         for (size_t q = 0; q < src.circuits.size(); q++) {
-            int s = std::get<0>(src.circuits[q]);
-            int d = std::get<1>(src.circuits[q]);
-            uint64_t b = std::get<2>(src.circuits[q]);
-            oc.circuits.push_back(std::make_tuple(s, d, b));
+            int s = src.circuits[q].src;
+            int d = src.circuits[q].dst;
+            uint64_t b = src.circuits[q].bytes;
+            OcsCircuit circuit;
+            circuit.src = s; circuit.dst = d; circuit.bytes = b;
+            circuit.flow_uid = src.circuits[q].flow_uid;
+            circuit.stripe_uid = src.circuits[q].stripe_uid;
+            oc.circuits.push_back(circuit);
             ocs_slots[std::make_tuple(s, d, b, src.stream)].push_back({pl, cidx});
         }
         oc.remaining = (int)oc.circuits.size();
@@ -389,7 +398,14 @@ void HTSimProtoTcp::load_ocs_plan() {
     }
     for (size_t k = 0; k < plan.assignments_full.size(); k++) {
         const OcsPlanData::Asn& a = plan.assignments_full[k];
-        OcsAsn rec; rec.is_direct = a.is_direct; rec.stripes = a.stripes;
+        OcsAsn rec; rec.flow_uid = a.flow_uid; rec.is_direct = a.is_direct;
+        for (size_t stripe = 0; stripe < a.stripes.size(); stripe++) {
+            OcsStripe item;
+            item.stripe_uid = a.stripes[stripe].stripe_uid;
+            item.plane = a.stripes[stripe].plane;
+            item.bytes = a.stripes[stripe].bytes;
+            rec.stripes.push_back(item);
+        }
         rec.phase = a.phase;
         ocs_assigns[std::make_tuple(a.src, a.dst, a.bytes, a.stream)]
             .push_back(rec);
@@ -470,12 +486,12 @@ bool HTSimProtoTcp::matching_changed(const OcsCfg& a, const OcsCfg& b) {
         sa.insert(a.matching.begin(), a.matching.end());
     else
         for (size_t i = 0; i < a.circuits.size(); i++)
-            sa.insert({std::get<0>(a.circuits[i]), std::get<1>(a.circuits[i])});
+            sa.insert({a.circuits[i].src, a.circuits[i].dst});
     if (!b.matching.empty())
         sb.insert(b.matching.begin(), b.matching.end());
     else
         for (size_t i = 0; i < b.circuits.size(); i++)
-            sb.insert({std::get<0>(b.circuits[i]), std::get<1>(b.circuits[i])});
+            sb.insert({b.circuits[i].src, b.circuits[i].dst});
     return sa != sb;
 }
 
@@ -702,27 +718,42 @@ void HTSimProtoTcp::schedule_htsim_event(FlowInfo flow, int flow_id) {
             ? (uint32_t)flow.src : (uint32_t)panel_perm[flow.src];
         uint32_t pd = (panel_perm.empty() || (size_t)flow.dst >= panel_perm.size())
             ? (uint32_t)flow.dst : (uint32_t)panel_perm[flow.dst];
-        // v5 assignment lookup: exact stream first, then any-stream fallback.
+        // Plan-v6 identity is authoritative when present. Tuple lookup remains
+        // temporarily available for Finding 3's separate fail-closed repair.
         OcsAsn* asn = NULL;
         {
-            auto ai = ocs_assigns.find(std::make_tuple((int)ps, (int)pd,
-                                        (uint64_t)flow.size, flow.tag));
-            if (ai == ocs_assigns.end() || ai->second.empty()) {
-                auto lo = ocs_assigns.lower_bound(std::make_tuple((int)ps, (int)pd,
-                                                  (uint64_t)flow.size, INT_MIN));
-                for (; lo != ocs_assigns.end(); ++lo) {
-                    if (std::get<0>(lo->first) != (int)ps ||
-                        std::get<1>(lo->first) != (int)pd ||
-                        std::get<2>(lo->first) != (uint64_t)flow.size) break;
-                    if (!lo->second.empty()) { ai = lo; break; }
+            static thread_local OcsAsn rec;
+            OcsPlanData::Asn exact_record;
+            if (!flow.flow_uid.empty() && consume_ocs_assignment(
+                    ocs_identity, flow.flow_uid, exact_record)) {
+                rec.flow_uid = exact_record.flow_uid;
+                rec.is_direct = exact_record.is_direct;
+                rec.phase = exact_record.phase;
+                rec.stripes.clear();
+                for (const auto& stripe : exact_record.stripes) {
+                    rec.stripes.push_back(OcsStripe{
+                        stripe.stripe_uid, stripe.plane, stripe.bytes});
                 }
-                if (lo == ocs_assigns.end() ||
-                    std::get<0>(lo->first) != (int)ps) ai = ocs_assigns.end();
-            }
-            if (ai != ocs_assigns.end() && !ai->second.empty()) {
-                static thread_local OcsAsn rec;
-                rec = ai->second.front(); ai->second.pop_front();
                 asn = &rec;
+            } else {
+                auto ai = ocs_assigns.find(std::make_tuple((int)ps, (int)pd,
+                                            (uint64_t)flow.size, flow.tag));
+                if (ai == ocs_assigns.end() || ai->second.empty()) {
+                    auto lo = ocs_assigns.lower_bound(std::make_tuple(
+                        (int)ps, (int)pd, (uint64_t)flow.size, INT_MIN));
+                    for (; lo != ocs_assigns.end(); ++lo) {
+                        if (std::get<0>(lo->first) != (int)ps ||
+                            std::get<1>(lo->first) != (int)pd ||
+                            std::get<2>(lo->first) != (uint64_t)flow.size) break;
+                        if (!lo->second.empty()) { ai = lo; break; }
+                    }
+                    if (lo == ocs_assigns.end() ||
+                        std::get<0>(lo->first) != (int)ps) ai = ocs_assigns.end();
+                }
+                if (ai != ocs_assigns.end() && !ai->second.empty()) {
+                    rec = ai->second.front(); ai->second.pop_front();
+                    asn = &rec;
+                }
             }
         }
         if (asn && !asn->is_direct && asn->stripes.size() > 1) {
@@ -733,18 +764,23 @@ void HTSimProtoTcp::schedule_htsim_event(FlowInfo flow, int flow_id) {
             m.pending_send = m.pending_recv = (int)asn->stripes.size();
             stripe_masters[flow_id] = m;
             for (size_t si = 0; si < asn->stripes.size(); si++) {
-                int pl = asn->stripes[si].first;
-                uint64_t sb = asn->stripes[si].second;
+                int pl = asn->stripes[si].plane;
+                uint64_t sb = asn->stripes[si].bytes;
+                const std::string stripe_uid = asn->stripes[si].stripe_uid;
                 int sub = stripe_next_tag++;
                 stripe_sub2master[sub] = flow_id;
                 HTSim::FlowInfo sf = flow; sf.size = sb; sf.tag = flow.tag;
-                // slot lookup for this stripe (same key discipline as below)
+                sf.flow_uid = stripe_uid;
                 std::pair<int,int> slot(-1, -1);
-                auto si2 = ocs_slots.find(std::make_tuple((int)ps, (int)pd,
-                                                          sb, flow.tag));
-                if (si2 != ocs_slots.end() && !si2->second.empty()) {
-                    slot = si2->second.front(); si2->second.pop_front();
-                } else {
+                consume_ocs_stripe_slot(ocs_identity, stripe_uid, slot);
+                if (slot.first < 0) {
+                    auto si2 = ocs_slots.find(std::make_tuple((int)ps, (int)pd,
+                                                              sb, flow.tag));
+                    if (si2 != ocs_slots.end() && !si2->second.empty()) {
+                        slot = si2->second.front(); si2->second.pop_front();
+                    }
+                }
+                if (slot.first < 0) {
                     auto lo = ocs_slots.lower_bound(std::make_tuple((int)ps, (int)pd,
                                                     sb, INT_MIN));
                     for (; lo != ocs_slots.end(); ++lo) {
@@ -765,6 +801,11 @@ void HTSimProtoTcp::schedule_htsim_event(FlowInfo flow, int flow_id) {
                     std::cerr << "stripe plane mismatch: plan says " << pl
                               << " slot says " << slot.first << std::endl;
                 }
+                std::cout << "OCS_IDENTITY flow_uid=" << asn->flow_uid
+                          << " stripe_uid=" << stripe_uid
+                          << " plane=" << slot.first
+                          << " round=" << ocs_cfgs[slot.first][slot.second].round
+                          << std::endl;
                 ocs_flow_cfg[sub] = slot;
                 if (!(ocs_cur[slot.first] == slot.second && !ocs_dark[slot.first])) {
                     ocs_held[std::make_pair(slot.first, slot.second)]
@@ -790,13 +831,25 @@ void HTSimProtoTcp::schedule_htsim_event(FlowInfo flow, int flow_id) {
         }
         if (kind == 'D') {
             ocs_forced_plane = -1;
+            if (asn) {
+                std::cout << "OCS_IDENTITY flow_uid=" << asn->flow_uid
+                          << " stripe_uid=- plane=-1 round=-1" << std::endl;
+            }
         } else {
             std::pair<int,int> slot(-1, -1);
-            auto si = ocs_slots.find(std::make_tuple((int)ps, (int)pd,
-                                                     (uint64_t)flow.size, flow.tag));
-            if (si != ocs_slots.end() && !si->second.empty()) {
-                slot = si->second.front(); si->second.pop_front();
-            } else {
+            std::string stripe_uid;
+            if (asn && asn->stripes.size() == 1) {
+                stripe_uid = asn->stripes[0].stripe_uid;
+                consume_ocs_stripe_slot(ocs_identity, stripe_uid, slot);
+            }
+            if (slot.first < 0) {
+                auto si = ocs_slots.find(std::make_tuple((int)ps, (int)pd,
+                                                         (uint64_t)flow.size, flow.tag));
+                if (si != ocs_slots.end() && !si->second.empty()) {
+                    slot = si->second.front(); si->second.pop_front();
+                }
+            }
+            if (slot.first < 0) {
                 // any-stream fallback: first non-empty deque for this (s,d,bytes)
                 auto lo = ocs_slots.lower_bound(std::make_tuple((int)ps, (int)pd,
                                                 (uint64_t)flow.size, INT_MIN));
@@ -815,6 +868,12 @@ void HTSimProtoTcp::schedule_htsim_event(FlowInfo flow, int flow_id) {
                 exit(3);
             }
             int pl = slot.first, cfgi = slot.second;
+            if (asn) {
+                std::cout << "OCS_IDENTITY flow_uid=" << asn->flow_uid
+                          << " stripe_uid=" << stripe_uid
+                          << " plane=" << pl
+                          << " round=" << ocs_cfgs[pl][cfgi].round << std::endl;
+            }
             // Record before the held-return below: held flows still
             // deliver partials and must charge the owner's reducer.
             red_flow_dst[flow_id] = std::make_pair((int)pd, (uint64_t)flow.size);

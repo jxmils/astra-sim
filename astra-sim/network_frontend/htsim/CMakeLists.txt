@@ -69,3 +69,14 @@ set_target_properties(AstraSim_HTSim
         LIBRARY_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/../lib/
         ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/../lib/
 )
+
+include(CTest)
+if (BUILD_TESTING)
+    add_executable(OcsPlanIdentityTest
+        proto/tests/OcsPlanIdentityTest.cc
+        proto/OcsPlanLoader.cc)
+    target_include_directories(OcsPlanIdentityTest PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/proto
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../../extern/helper)
+    add_test(NAME OcsPlanIdentityTest COMMAND OcsPlanIdentityTest)
+endif ()

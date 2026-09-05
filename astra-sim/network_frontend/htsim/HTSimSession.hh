@@ -28,12 +28,15 @@ enum class Dir { Send, Receive };
 // Temporary struct to pass trace info
 class FlowInfo {
     public:
-    FlowInfo(int _src, int _dst, uint64_t _size, int _tag)
-     : src(_src), dst(_dst), size(_size), tag(_tag) {}
+    FlowInfo(int _src, int _dst, uint64_t _size, int _tag,
+             std::string _flow_uid = "")
+     : src(_src), dst(_dst), size(_size), tag(_tag),
+       flow_uid(_flow_uid) {}
     int src, dst;
     int size;
     // Tag for all flows belonging to a collective
     int tag;
+    std::string flow_uid;
 };
 
 struct HTSimConf {

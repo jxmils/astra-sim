@@ -46,6 +46,7 @@ class BaseStream : public Callable, public StreamStat {
     Sys* owner;
     DataSet* dataset;
     int steps_finished;
+    uint64_t plan_flow_step;
     int initial_data_size;
     int priority;
     StreamState state;

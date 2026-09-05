@@ -33,7 +33,17 @@ struct sim_request {
     uint64_t reqCount;
     uint32_t vnet;
     uint32_t layerNum;
+    // Stable plan-v6 identity for this logical send. It is independent of
+    // HTSim's runtime flow ID and survives rendezvous/request copies.
+    std::string flow_uid;
 };
+
+inline std::string make_collective_flow_uid(uint32_t tag,
+                                            uint32_t source,
+                                            uint64_t stream_step) {
+    return "cf6:tag=" + std::to_string(tag) + ":src=" +
+           std::to_string(source) + ":step=" + std::to_string(stream_step);
+}
 
 class MetaData {
   public:

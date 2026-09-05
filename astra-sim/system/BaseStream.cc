@@ -21,6 +21,7 @@ BaseStream::BaseStream(int stream_id,
                        Sys* owner,
                        std::list<CollectivePhase> phases_to_go) {
     this->stream_id = stream_id;
+    this->plan_flow_step = 0;
     this->owner = owner;
     this->initialized = false;
     this->phases_to_go = phases_to_go;

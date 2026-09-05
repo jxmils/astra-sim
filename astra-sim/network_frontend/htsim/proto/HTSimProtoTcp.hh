@@ -9,6 +9,7 @@
 #include <fstream>
 
 #include "HTSimSessionImpl.hh"
+#include "OcsPlanLoader.hh"
 #include <deque>
 #include <tuple>
 
@@ -103,7 +104,9 @@ class HTSimProtoTcp final : public HTSimSession::HTSimSessionImpl {
         bool ocs_initial_reconf = false;
         double ocs_plan_reconf_ns = 0.0;
     public:  // OCS plan executor (callback needs access)
-        struct OcsCfg { int round; std::vector<std::tuple<int,int,uint64_t>> circuits;
+        struct OcsCircuit { int src; int dst; uint64_t bytes;
+                            std::string flow_uid; std::string stripe_uid; };
+        struct OcsCfg { int round; std::vector<OcsCircuit> circuits;
                         int remaining; int started = 0;
                         simtime_picosec max_drain = 0; bool advance_scheduled = false;
                         std::vector<std::pair<int,int>> matching;   // installed pairs
@@ -117,11 +120,13 @@ class HTSimProtoTcp final : public HTSimSession::HTSimSessionImpl {
         // (src,dst,bytes,tag) -> FIFO of (plane, cfg_idx); tag==-1 fallback key
         std::map<std::tuple<int,int,uint64_t,int>, std::deque<std::pair<int,int>>> ocs_slots;
         std::map<std::tuple<int,int,uint64_t>, std::deque<char>> ocs_route_kind; // 'D'/'O'
-        // v5 assignments: (src,dst,bytes,stream) -> FIFO of records; an OCS
-        // record with >1 stripes splits the logical transfer across planes.
-        struct OcsAsn { bool is_direct;
-                        std::vector<std::pair<int,uint64_t>> stripes;
+        struct OcsStripe { std::string stripe_uid; int plane; uint64_t bytes; };
+        // Exact plan-v6 assignments plus the retained legacy tuple index. The
+        // latter remains only until Finding 3 removes fail-open mismatch paths.
+        struct OcsAsn { std::string flow_uid; bool is_direct;
+                        std::vector<OcsStripe> stripes;
                         int phase = 0; };
+        OcsPlanIdentityIndex ocs_identity;
         std::map<std::tuple<int,int,uint64_t,int>, std::deque<OcsAsn>> ocs_assigns;
         // striped-transfer master accounting: ASTRA sees one flow id; each
         // stripe is an internal sub-flow with a synthetic negative tag.

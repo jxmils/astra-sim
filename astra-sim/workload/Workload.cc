@@ -318,6 +318,15 @@ void Workload::issue_comm(shared_ptr<Chakra::ETFeederNode> node) {
         sehd->wlhd = new WorkloadLayerHandlerData;
         sehd->wlhd->node_id = node->id();
         sehd->event = EventType::PacketSent;
+        if (node->has_other_attr("flow_uid")) {
+            const ChakraProtoMsg::AttributeProto& flow_uid =
+                node->get_other_attr("flow_uid");
+            if (!flow_uid.has_string_val() || flow_uid.string_val().empty()) {
+                cerr << "flow_uid must be a nonempty string attribute" << endl;
+                exit(EXIT_FAILURE);
+            }
+            snd_req.flow_uid = flow_uid.string_val();
+        }
         sys->front_end_sim_send(0, Sys::dummy_data, node->comm_size(), UINT8,
                                 node->comm_dst(), node->comm_tag(), &snd_req,
                                 Sys::FrontEndSendRecvType::NATIVE,
