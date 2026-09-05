@@ -6,6 +6,12 @@ LICENSE file in the root directory of this source tree.
 // TODO: HardwareResource.cc should be moved to the system layer.
 
 #include "astra-sim/workload/HardwareResource.hh"
+#include <cstdlib>
+// ASTRA_CONCURRENT_SENDS=1: explicit COMM_SEND nodes do not take the per-NPU comm slot
+static bool concurrent_sends() { static int v = -1; if (v < 0) { const char* e = getenv("ASTRA_CONCURRENT_SENDS"); v = (e && *e == '1') ? 1 : 0; } return v == 1; }
+static bool exempt(const std::shared_ptr<Chakra::ETFeederNode>& node) {
+    return node->type() == ChakraProtoMsg::COMM_RECV_NODE || (concurrent_sends() && node->type() == ChakraProtoMsg::COMM_SEND_NODE);
+}
 
 using namespace std;
 using namespace AstraSim;
@@ -44,7 +50,7 @@ void HardwareResource::occupy(const shared_ptr<Chakra::ETFeederNode> node) {
             ++num_gpu_ops;
             gpu_ops_node = node;
         } else {
-            if (node->type() == ChakraNodeType::COMM_RECV_NODE) {
+            if (exempt(node)) {
                 return;
             }
             assert(num_in_flight_gpu_comm_ops == 0);
@@ -64,7 +70,7 @@ void HardwareResource::release(const shared_ptr<Chakra::ETFeederNode> node) {
             --num_in_flight_gpu_comp_ops;
             assert(num_in_flight_gpu_comp_ops == 0);
         } else {
-            if (node->type() == ChakraNodeType::COMM_RECV_NODE) {
+            if (exempt(node)) {
                 return;
             }
             --num_in_flight_gpu_comm_ops;
@@ -92,7 +98,7 @@ bool HardwareResource::is_available(
             if (num_in_flight_gpu_comm_ops == 0) {
                 return true;
             } else {
-                if (node->type() == ChakraNodeType::COMM_RECV_NODE) {
+                if (exempt(node)) {
                     return true;
                 }
                 if (num_in_flight_gpu_comm_ops == 0) {
