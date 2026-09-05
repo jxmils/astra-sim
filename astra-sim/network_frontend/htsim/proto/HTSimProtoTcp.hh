@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <deque>
 #include <memory>
 #include <map>
 #include <vector>
@@ -79,18 +80,41 @@ class HTSimProtoTcp final : public HTSimSession::HTSimSessionImpl {
         // makes multi-GiB collectives simulable: uncapped, in-flight ~ S and
         // bisection buffers would need gigabytes.
         uint64_t nocc_maxwin = 0;
-        // --- OCS mode: planes are circuit switches with leases ---
-        // A flow using plane p leases (uplink src, downlink dst) exclusively:
-        // start = max(now, port frees) + T_r (dark reconfiguration gap),
-        // released after the flow's serialization window. Same-pair
-        // consecutive flows reuse the standing circuit (no T_r), so
-        // matching-structured schedules pay T_r only on configuration
-        // changes. Circuits are exclusive: nothing queues inside the switch.
+        // --- Dynamic OCS mode: planes are circuit switches with leases ---
+        // A flow using plane p holds its (uplink src, downlink dst) circuit
+        // until sender-side final-ACK completion. Compatible flows may share
+        // the standing circuit; an incompatible request waits until both
+        // endpoint reference counts reach zero before reconfiguration.
         bool ocs_mode = false;
         simtime_picosec ocs_reconf = 10000;   // 10 ns default, in ps
-        // per plane, per node: port busy-until and last connected peer
-        std::vector<std::vector<simtime_picosec>> ocs_up_free, ocs_down_free;
+        // Per plane, per node: installed peer, configuration-ready time, and
+        // active transport references. No serialization estimate releases a
+        // lease.
         std::vector<std::vector<int>> ocs_up_peer, ocs_down_peer;
+        std::vector<std::vector<simtime_picosec>> ocs_up_ready, ocs_down_ready;
+        std::vector<std::vector<uint32_t>> ocs_up_active, ocs_down_active;
+        struct DynamicLease {
+            int plane;
+            uint32_t src;
+            uint32_t dst;
+            simtime_picosec ready;
+        };
+        struct DynamicWaiter {
+            HTSim::FlowInfo flow;
+            int flow_id;
+        };
+        std::map<int, DynamicLease> ocs_dynamic_leases;
+        std::deque<DynamicWaiter> ocs_dynamic_waiters;
+        std::set<int> ocs_dynamic_queued;
+        std::map<int, simtime_picosec> ocs_dynamic_requested_at;
+        uint64_t ocs_dynamic_acquired = 0;
+        uint64_t ocs_dynamic_completed = 0;
+        uint64_t ocs_dynamic_queued_flows = 0;
+        uint64_t ocs_dynamic_retry_attempts = 0;
+        uint64_t ocs_dynamic_estimated_release_events = 0;
+        uint64_t ocs_dynamic_premature_reconfigs = 0;
+        void ocs_release_dynamic_lease(int flow_id);
+        void ocs_retry_dynamic_waiters();
         uint64_t ocs_reconfigs = 0, ocs_reuses = 0;
         // --- Plan-driven OCS (merged model): executes the same ocs-plan.json
         // as the analytical OcsSwitch. Per plane: an ordered configuration

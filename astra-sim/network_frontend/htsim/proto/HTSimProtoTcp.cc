@@ -277,10 +277,12 @@ if (!panel_kind.empty()) {
         load_ocs_plan();
     }
     if (ocs_mode && panel_planes > 0) {
-        ocs_up_free.assign(panel_planes, std::vector<simtime_picosec>(no_of_nodes, 0));
-        ocs_down_free.assign(panel_planes, std::vector<simtime_picosec>(no_of_nodes, 0));
         ocs_up_peer.assign(panel_planes, std::vector<int>(no_of_nodes, -1));
         ocs_down_peer.assign(panel_planes, std::vector<int>(no_of_nodes, -1));
+        ocs_up_ready.assign(panel_planes, std::vector<simtime_picosec>(no_of_nodes, 0));
+        ocs_down_ready.assign(panel_planes, std::vector<simtime_picosec>(no_of_nodes, 0));
+        ocs_up_active.assign(panel_planes, std::vector<uint32_t>(no_of_nodes, 0));
+        ocs_down_active.assign(panel_planes, std::vector<uint32_t>(no_of_nodes, 0));
     }
     std::cout << "Panel topology: " << panel_kind << " nodes " << no_of_nodes
               << " planes " << panel_planes << " linkGiBps " << panel_link_gibps
@@ -669,7 +671,53 @@ void HTSimProtoTcp::flow_done(int flow_id) {
         if (ocs_runtime_stripe_uid.count(flow_id))
             ocs_note_stripe_completed(flow_id);
     }
+    if (ocs_mode && !ocs_plan_mode)
+        ocs_release_dynamic_lease(flow_id);
     ocs_flow_cfg.erase(flow_id);
+}
+
+void HTSimProtoTcp::ocs_release_dynamic_lease(int flow_id) {
+    std::map<int, DynamicLease>::iterator lease = ocs_dynamic_leases.find(flow_id);
+    if (lease == ocs_dynamic_leases.end())
+        return;  // Persistent-path flows do not own a dynamic OCS lease.
+
+    const DynamicLease released = lease->second;
+    uint32_t& up = ocs_up_active[released.plane][released.src];
+    uint32_t& down = ocs_down_active[released.plane][released.dst];
+    if (up == 0 || down == 0 ||
+        ocs_up_peer[released.plane][released.src] != (int)released.dst ||
+        ocs_down_peer[released.plane][released.dst] != (int)released.src) {
+        std::cerr << "OCS_DYNAMIC_FATAL reason=invalid_lease_on_completion"
+                  << " flow_id=" << flow_id << std::endl;
+        exit(2);
+    }
+    --up;
+    --down;
+    ++ocs_dynamic_completed;
+    const simtime_picosec complete = eventlist.now();
+    std::cout << "OCS_DYNAMIC_LEASE_RELEASE"
+              << " flow_id=" << flow_id
+              << " plane=" << released.plane
+              << " src=" << released.src
+              << " dst=" << released.dst
+              << " complete_ns=" << timeAsNs(complete)
+              << " release_ns=" << timeAsNs(complete)
+              << " active_flows=" << std::max(up, down)
+              << " release_trigger=sender_final_ack"
+              << std::endl;
+    ocs_dynamic_leases.erase(lease);
+    ocs_retry_dynamic_waiters();
+}
+
+void HTSimProtoTcp::ocs_retry_dynamic_waiters() {
+    const size_t pending = ocs_dynamic_waiters.size();
+    for (size_t i = 0; i < pending; ++i) {
+        DynamicWaiter waiter = ocs_dynamic_waiters.front();
+        ocs_dynamic_waiters.pop_front();
+        ocs_dynamic_queued.erase(waiter.flow_id);
+        ++ocs_dynamic_retry_attempts;
+        schedule_htsim_event(waiter.flow, waiter.flow_id);
+    }
 }
 
 HTSimProtoTcp* HTSimProtoTcp::s_self = NULL;
@@ -1002,8 +1050,8 @@ void HTSimProtoTcp::schedule_htsim_event(FlowInfo flow, int flow_id) {
     if (panel_top) {
         panel_cands = panel_top->get_candidates(phys_src, phys_dst);
         if ((ocs_mode || ocs_plan_mode) && panel_top->planes() > 0) {
-            // Evaluate: direct via ledger cost; each plane via lease cost
-            //   T_O = wait + T_r(unless same-pair reuse) + 2L + s/B.
+            // Evaluate: direct via ledger cost; each available plane via its
+            // standing circuit and active transport references.
             if (ocs_forced_plane >= -1) {
             // plan decides: DIRECT -> the direct candidate; else the plane's
             // 2-hop route. No policy, no leasing; gating already done above.
@@ -1061,17 +1109,25 @@ void HTSimProtoTcp::schedule_htsim_event(FlowInfo flow, int flow_id) {
                     direct_cost = cost; direct_idx = (int)ci;
                 } else {
                     int pl = cd.plane;
-                    simtime_picosec t0 = now_ps;
-                    if (ocs_up_free[pl][phys_src] > t0) t0 = ocs_up_free[pl][phys_src];
-                    if (ocs_down_free[pl][phys_dst] > t0) t0 = ocs_down_free[pl][phys_dst];
                     reuse = (ocs_up_peer[pl][phys_src] == (int)phys_dst &&
                              ocs_down_peer[pl][phys_dst] == (int)phys_src);
-                    tstart = t0 + (reuse ? 0 : ocs_reconf);
+                    const bool occupied =
+                        ocs_up_active[pl][phys_src] > 0 ||
+                        ocs_down_active[pl][phys_dst] > 0;
+                    if (occupied && !reuse)
+                        continue;
+                    tstart = now_ps;
+                    if (reuse) {
+                        tstart = std::max(tstart, ocs_up_ready[pl][phys_src]);
+                        tstart = std::max(tstart, ocs_down_ready[pl][phys_dst]);
+                    } else {
+                        tstart += ocs_reconf;
+                    }
                     double Bpns = (double)cd.hop_queues[0]->link_bitrate() / 8.0 / 1e9;
                     if (panel_policy == PanelPolicy::Static) {
-                        // static: unloaded costs -- no wait awareness; a plane
-                        // is priced at T_r + path latency + serialization only.
-                        cost = timeAsNs(ocs_reconf)
+                        // Static uses unloaded costs but still recognizes a
+                        // compatible standing matching.
+                        cost = timeAsNs(reuse ? 0 : ocs_reconf)
                              + (double)cd.latency_sum / 1000.0
                              + (double)msg_size / Bpns;
                     } else {
@@ -1089,21 +1145,73 @@ void HTSimProtoTcp::schedule_htsim_event(FlowInfo flow, int flow_id) {
                 direct_cost <= direct_preference_factor * best_cost) {
                 best = direct_idx;
             }
+            if (best < 0) {
+                if (!ocs_dynamic_queued.insert(flow_id).second) {
+                    std::cerr << "OCS_DYNAMIC_FATAL reason=flow_queued_twice"
+                              << " flow_id=" << flow_id << std::endl;
+                    exit(2);
+                }
+                if (!ocs_dynamic_requested_at.count(flow_id)) {
+                    ocs_dynamic_requested_at[flow_id] = now_ps;
+                    ++ocs_dynamic_queued_flows;
+                }
+                DynamicWaiter waiter = {flow, flow_id};
+                ocs_dynamic_waiters.push_back(waiter);
+                std::cout << "OCS_DYNAMIC_WAIT"
+                          << " flow_id=" << flow_id
+                          << " src=" << phys_src
+                          << " dst=" << phys_dst
+                          << " queued_ns=" << timeAsNs(now_ps)
+                          << " reason=no_compatible_plane"
+                          << std::endl;
+                for (size_t k = 0; k < panel_cands->size(); ++k)
+                    delete (*panel_cands)[k].route;
+                delete panel_cands;
+                return;
+            }
             panel_choice = &(*panel_cands)[best];
             if (panel_choice->is_plane) {
-                // ocs lease commit
+                // Commit a real transport-owned lease. The final ACK, not a
+                // serialization estimate, releases these references.
                 int pl = panel_choice->plane;
-                double Bpns = (double)panel_choice->hop_queues[0]->link_bitrate() / 8.0 / 1e9;
-                simtime_picosec occ = (simtime_picosec)(((double)msg_size / Bpns) * 1000.0)
-                                      + timeFromNs(3.0 * 1500.0 / Bpns);
-                simtime_picosec rel = best_start + occ;
-                ocs_up_free[pl][phys_src] = rel;
-                ocs_down_free[pl][phys_dst] = rel;
+                if (ocs_dynamic_leases.count(flow_id)) {
+                    std::cerr << "OCS_DYNAMIC_FATAL reason=duplicate_flow_lease"
+                              << " flow_id=" << flow_id << std::endl;
+                    exit(2);
+                }
                 ocs_up_peer[pl][phys_src] = (int)phys_dst;
                 ocs_down_peer[pl][phys_dst] = (int)phys_src;
+                ocs_up_ready[pl][phys_src] = best_start;
+                ocs_down_ready[pl][phys_dst] = best_start;
+                ++ocs_up_active[pl][phys_src];
+                ++ocs_down_active[pl][phys_dst];
+                DynamicLease lease = {pl, phys_src, phys_dst, best_start};
+                ocs_dynamic_leases[flow_id] = lease;
+                ++ocs_dynamic_acquired;
                 if (best_reuse) ocs_reuses++; else ocs_reconfigs++;
-                ocs_wait_total += (best_start - eventlist.now());
-                panel_flow_delay = best_start - eventlist.now();
+                simtime_picosec requested = now_ps;
+                std::map<int, simtime_picosec>::iterator request =
+                    ocs_dynamic_requested_at.find(flow_id);
+                if (request != ocs_dynamic_requested_at.end()) {
+                    requested = request->second;
+                    ocs_dynamic_requested_at.erase(request);
+                }
+                ocs_wait_total += (best_start - requested);
+                panel_flow_delay = best_start - now_ps;
+                std::cout << "OCS_DYNAMIC_LEASE_ACQUIRE"
+                          << " flow_id=" << flow_id
+                          << " plane=" << pl
+                          << " src=" << phys_src
+                          << " dst=" << phys_dst
+                          << " bytes=" << msg_size
+                          << " request_ns=" << timeAsNs(requested)
+                          << " acquire_ns=" << timeAsNs(now_ps)
+                          << " ready_ns=" << timeAsNs(best_start)
+                          << " active_flows="
+                          << std::max(ocs_up_active[pl][phys_src],
+                                      ocs_down_active[pl][phys_dst])
+                          << " reused=" << (best_reuse ? 1 : 0)
+                          << std::endl;
             } else {
                 for (size_t k = 0; k < panel_choice->hop_queues.size(); k++)
                     panel_choice->hop_queues[k]->reserve_bytes(msg_size);
@@ -1331,6 +1439,44 @@ void HTSimProtoTcp::finish() {
                   << " circuit_reuses=" << ocs_reuses
                   << " total_wait_ns=" << timeAsNs(ocs_wait_total)
                   << " reconf_ns=" << timeAsNs(ocs_reconf) << std::endl;
+        uint64_t active_up_references = 0;
+        uint64_t active_down_references = 0;
+        for (size_t plane = 0; plane < ocs_up_active.size(); ++plane) {
+            for (size_t node = 0; node < ocs_up_active[plane].size(); ++node) {
+                active_up_references += ocs_up_active[plane][node];
+                active_down_references += ocs_down_active[plane][node];
+            }
+        }
+        const uint64_t active_references =
+            std::max(active_up_references, active_down_references);
+        const bool dynamic_complete =
+            ocs_dynamic_acquired == ocs_dynamic_completed &&
+            ocs_dynamic_leases.empty() && ocs_dynamic_waiters.empty() &&
+            ocs_dynamic_queued.empty() && ocs_dynamic_requested_at.empty() &&
+            active_up_references == 0 && active_down_references == 0 &&
+            ocs_dynamic_estimated_release_events == 0 &&
+            ocs_dynamic_premature_reconfigs == 0;
+        std::cout << "OCS_DYNAMIC_AUDIT"
+                  << " acquired_flows=" << ocs_dynamic_acquired
+                  << " completed_flows=" << ocs_dynamic_completed
+                  << " active_references=" << active_references
+                  << " active_up_references=" << active_up_references
+                  << " active_down_references=" << active_down_references
+                  << " queued_flows=" << ocs_dynamic_queued_flows
+                  << " pending_flows=" << ocs_dynamic_waiters.size()
+                  << " retry_attempts=" << ocs_dynamic_retry_attempts
+                  << " estimated_release_events="
+                  << ocs_dynamic_estimated_release_events
+                  << " premature_reconfigurations="
+                  << ocs_dynamic_premature_reconfigs
+                  << " release_mode=transport_completion"
+                  << " status=" << (dynamic_complete ? "PASS" : "FAIL")
+                  << std::endl;
+        if (!dynamic_complete) {
+            std::cerr << "OCS_DYNAMIC_FATAL reason=incomplete_dynamic_lease_state"
+                      << std::endl;
+            exit(2);
+        }
     }
     std::cout << "Duplicate flow finishes ignored: "
               << HTSimSession::duplicate_finish_count << std::endl;

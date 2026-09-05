@@ -171,8 +171,8 @@ void HTSimSession::notify_sender_sending_finished(int src_id,
 void HTSimSession::flow_finish_send(int src_id, int dst_id, int msg_size, int flow_id) {
 
     int tag = flow_id_to_tag[flow_id];
-    // Retire an exact planned OCS stripe before its ASTRA completion handler
-    // can make a flow from the next configuration runnable. Other backends'
+    // Retire an exact planned OCS stripe or dynamic OCS lease before its ASTRA
+    // completion handler can make dependent traffic runnable. Other backends'
     // flow_done implementations are no-ops.
     HTSimSession::instance().impl->flow_done(flow_id);
     // Let sender knows that the flow has finished.
