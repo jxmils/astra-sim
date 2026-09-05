@@ -3,6 +3,7 @@
 #include "OcsPlanLoader.hh"
 #include <algorithm>
 #include <climits>
+#include <iomanip>
 #include <set>
 #include <sstream>
 
@@ -592,6 +593,7 @@ void HTSimProtoTcp::ocs_print_config_drain(
         (ocs_cfgs[plane][configuration + 1].force_reconf ||
          matching_changed(current, ocs_cfgs[plane][configuration + 1]));
     std::ostringstream record;
+    record << std::setprecision(15);
     record << "OCS_CONFIG_DRAIN"
            << " plane=" << plane
            << " config=" << configuration
