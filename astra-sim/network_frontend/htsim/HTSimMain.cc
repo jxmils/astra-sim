@@ -23,7 +23,8 @@ void print_backend_capabilities(const std::string& admission) {
         << " backend_contract=1"
         << " concurrent_chakra_sends=1"
         << " chakra_send_admission=" << admission
-        << " ocs_advance=estimated_serialization_drain"
+        << " ocs_advance=transport_completion"
+        << " planned_ocs_advance=transport_completion"
         << " ocs_plan_schema=6"
         << " exact_flow_identity=1"
         << " exact_stripe_identity=1"

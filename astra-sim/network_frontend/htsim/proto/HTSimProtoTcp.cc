@@ -357,6 +357,12 @@ void HTSimProtoTcp::ocs_print_plan_audit(const char* status) {
               << " expected_slots=" << ocs_expected_stripes.size()
               << " consumed_slots=" << ocs_consumed_slots.size()
               << " fallback_lookups=" << ocs_fallback_lookups
+              << " ocs_advance_mode=transport_completion"
+              << " expected_configurations=" << ocs_expected_configurations
+              << " drained_configurations=" << ocs_drained_configurations
+              << " config_drain_records=" << ocs_config_drain_records
+              << " estimated_drain_events=" << ocs_estimated_drain_events
+              << " premature_advances=" << ocs_premature_advances
               << " status=" << status << std::endl;
 }
 
@@ -461,6 +467,7 @@ void HTSimProtoTcp::load_ocs_plan() {
         }
         oc.remaining = (int)oc.circuits.size();
         ocs_cfgs[pl].push_back(oc);
+        ocs_expected_configurations++;
     }
     s_self = this;
     std::cout << "OCS plan loaded: planes " << plan.planes
@@ -476,6 +483,16 @@ void HTSimProtoTcp::ocs_install_next(int plane) {
 }
 
 void HTSimProtoTcp::ocs_install_next_uncharged(int plane, bool /*counted*/) {
+    const int current_index = ocs_cur[plane];
+    if (current_index < 0 || current_index >= (int)ocs_cfgs[plane].size())
+        ocs_plan_fatal("configuration_advance_out_of_range");
+    OcsCfg& current = ocs_cfgs[plane][current_index];
+    if (!current.drained ||
+        current.started != (int)current.circuits.size() ||
+        current.completed != (int)current.circuits.size()) {
+        ocs_premature_advances++;
+        ocs_plan_fatal("premature_configuration_advance");
+    }
     // red gate: hold the first unfold configuration on this plane until
     // every owner's reduction engine has drained the partials it must
     // combine. Applied AT MOST ONCE per plane: re-checking on each retry
@@ -501,6 +518,7 @@ void HTSimProtoTcp::ocs_install_next_uncharged(int plane, bool /*counted*/) {
             }
         }
     }
+    ocs_print_config_drain(plane, current_index, eventlist.now());
     ocs_dark[plane] = false;
     ocs_cur[plane]++;
     ocs_plan_rounds_done++;
@@ -533,18 +551,17 @@ bool HTSimProtoTcp::matching_changed(const OcsCfg& a, const OcsCfg& b) {
     return sa != sb;
 }
 
-static void ocs_drain_cb(void* arg) {
-    std::pair<HTSimProtoTcp*, int>* pp = (std::pair<HTSimProtoTcp*, int>*)arg;
-    pp->first->ocs_drain_reached(pp->second);
-    delete pp;
-}
-
-// The installed configuration's circuits have all finished SERIALIZING
-// (drained their uplinks). Mirroring the analytical OcsSwitch: the circuit can
-// be torn down now -- in-flight propagation completes after removal. Charge
-// T_r only if the next matching differs.
+// The installed configuration's exact stripes have all reported sender-side
+// HTSim transport completion. Only now may the matching be retired.
 void HTSimProtoTcp::ocs_advance_after_drain(int plane) {
     int cfg = ocs_cur[plane];
+    OcsCfg& current = ocs_cfgs[plane][cfg];
+    if (!current.drained ||
+        current.started != (int)current.circuits.size() ||
+        current.completed != (int)current.circuits.size()) {
+        ocs_premature_advances++;
+        ocs_plan_fatal("premature_configuration_advance");
+    }
     if (cfg + 1 >= (int)ocs_cfgs[plane].size()) return;
     bool changed = ocs_cfgs[plane][cfg + 1].force_reconf ||
                    matching_changed(ocs_cfgs[plane][cfg], ocs_cfgs[plane][cfg + 1]);
@@ -558,11 +575,53 @@ void HTSimProtoTcp::ocs_advance_after_drain(int plane) {
     }
 }
 
+void HTSimProtoTcp::ocs_print_config_drain(
+        int plane, int configuration, simtime_picosec advance_time) {
+    OcsCfg& current = ocs_cfgs[plane][configuration];
+    if (current.drain_reported) return;
+    if (!current.drained || !current.has_completion ||
+        current.started != (int)current.circuits.size() ||
+        current.completed != (int)current.circuits.size() ||
+        advance_time < current.last_complete) {
+        ocs_premature_advances++;
+        ocs_plan_fatal("invalid_configuration_drain_record");
+    }
+    const bool has_next = configuration + 1 < (int)ocs_cfgs[plane].size();
+    const bool changed = has_next &&
+        (ocs_cfgs[plane][configuration + 1].force_reconf ||
+         matching_changed(current, ocs_cfgs[plane][configuration + 1]));
+    std::cout << "OCS_CONFIG_DRAIN"
+              << " plane=" << plane
+              << " config=" << configuration
+              << " round=" << current.round
+              << " expected_stripes=" << current.circuits.size()
+              << " started_stripes=" << current.started
+              << " completed_stripes=" << current.completed
+              << " last_start_ns=" << timeAsNs(current.last_start)
+              << " first_complete_ns=" << timeAsNs(current.first_complete)
+              << " last_complete_ns=" << timeAsNs(current.last_complete)
+              << " advance_ns=" << timeAsNs(advance_time)
+              << " reconfiguration_ns="
+              << (changed ? ocs_plan_reconf_ns : 0.0)
+              << " status=PASS" << std::endl;
+    current.drain_reported = true;
+    ocs_config_drain_records++;
+}
+
 void HTSimProtoTcp::ocs_drain_reached(int plane) {
     int cfg = ocs_cur[plane];
     OcsCfg& current = ocs_cfgs[plane][cfg];
+    if (current.drained) ocs_plan_fatal("configuration_drained_more_than_once");
+    if (current.started != (int)current.circuits.size() ||
+        current.completed != (int)current.circuits.size()) {
+        ocs_premature_advances++;
+        ocs_plan_fatal("configuration_drained_before_transport_completion");
+    }
     ocs_cfg_times[std::make_pair(plane, cfg)].second = timeAsNs(eventlist.now());
     current.drained = true;
+    ocs_drained_configurations++;
+    if (cfg + 1 >= (int)ocs_cfgs[plane].size())
+        ocs_print_config_drain(plane, cfg, eventlist.now());
     if (!current.synchronize) {
         ocs_advance_after_drain(plane);
         return;
@@ -604,8 +663,6 @@ void HTSimProtoTcp::flow_done(int flow_id) {
         if (ocs_runtime_stripe_uid.count(flow_id))
             ocs_note_stripe_completed(flow_id);
     }
-    // Configuration advancement remains serialization-drain-driven until the
-    // separately scoped completion-timing repair.
     ocs_flow_cfg.erase(flow_id);
 }
 
@@ -638,6 +695,20 @@ void HTSimProtoTcp::stripe_finish_send(int, int, int, int tag) {
 }
 
 void HTSimProtoTcp::ocs_note_stripe_completed(int flow_id) {
+    auto configured = ocs_flow_cfg.find(flow_id);
+    if (configured == ocs_flow_cfg.end())
+        ocs_plan_fatal("stripe_completion_has_no_exact_slot");
+    const int plane = configured->second.first;
+    const int configuration = configured->second.second;
+    if (plane < 0 || plane >= (int)ocs_cfgs.size() ||
+        configuration < 0 || configuration >= (int)ocs_cfgs[plane].size())
+        ocs_plan_fatal("stripe_completion_slot_out_of_range");
+    if (classify_ocs_slot_state(
+            configuration, ocs_cur[plane], ocs_dark[plane]) !=
+        OcsSlotState::Active) {
+        ocs_premature_advances++;
+        ocs_plan_fatal("stripe_completed_after_configuration_retired");
+    }
     auto stripe = ocs_runtime_stripe_uid.find(flow_id);
     if (stripe == ocs_runtime_stripe_uid.end())
         ocs_plan_fatal("completion_for_unknown_runtime_stripe");
@@ -646,6 +717,21 @@ void HTSimProtoTcp::ocs_note_stripe_completed(int flow_id) {
         ocs_plan_fatal("stripe_completed_before_start_or_more_than_once");
     }
     ocs_runtime_stripe_uid.erase(stripe);
+    OcsCfg& current = ocs_cfgs[plane][configuration];
+    current.completed++;
+    if (current.completed > current.started ||
+        current.completed > (int)current.circuits.size())
+        ocs_plan_fatal("configuration_completed_too_many_stripes");
+    const simtime_picosec now = eventlist.now();
+    if (!current.has_completion) {
+        current.first_complete = now;
+        current.has_completion = true;
+    }
+    current.last_complete = now;
+    ocs_flow_cfg.erase(configured);
+    if (current.started == (int)current.circuits.size() &&
+        current.completed == (int)current.circuits.size())
+        ocs_drain_reached(plane);
 }
 
 void HTSimProtoTcp::stripe_finish_recv(int, int, int, int tag) {
@@ -745,16 +831,14 @@ void HTSimProtoTcp::ocs_note_started(int flow_id, uint64_t bytes,
     }
     OcsCfg& oc = ocs_cfgs[pl][cfgi];
     oc.started++;
+    oc.last_start = eventlist.now();
     if (oc.started > (int)oc.circuits.size())
         ocs_plan_fatal("configuration_started_too_many_stripes");
-    simtime_picosec drain = eventlist.now()
-        + (simtime_picosec)((double)bytes * 8.0 * 1e12 / (double)plane_rate)
-        + (simtime_picosec)(2.0 * 1500.0 * 8.0 * 1e12 / (double)plane_rate);
-    if (drain > oc.max_drain) oc.max_drain = drain;
     // Owner reduction service: a fold shard becomes reducible when it
     // finishes arriving; the owner's engine then consumes it at
     // ocs_red_Bps. Service is a busy-until ledger per owner, so
-    // reduction overlaps arrivals rather than starting after them.
+    // reduction overlaps arrivals rather than starting after them. This
+    // pre-existing reduction estimate does not control OCS advancement.
     if (ocs_red_Bps > 0.0 && oc.phase == 1) {
         std::map<int, std::pair<int,uint64_t>>::iterator di =
             red_flow_dst.find(flow_id);
@@ -762,19 +846,16 @@ void HTSimProtoTcp::ocs_note_started(int flow_id, uint64_t bytes,
             int owner = di->second.first;
             if ((int)red_busy_until_ns.size() <= owner)
                 red_busy_until_ns.resize(owner + 1, 0.0);
-            double arrive_ns = timeAsNs(drain);
+            simtime_picosec estimated_red_arrival = eventlist.now()
+                + (simtime_picosec)((double)bytes * 8.0 * 1e12 /
+                                    (double)plane_rate)
+                + (simtime_picosec)(2.0 * 1500.0 * 8.0 * 1e12 /
+                                    (double)plane_rate);
+            double arrive_ns = timeAsNs(estimated_red_arrival);
             double start_ns = std::max(red_busy_until_ns[owner], arrive_ns);
             red_busy_until_ns[owner] =
                 start_ns + (double)bytes / ocs_red_Bps * 1e9;
         }
-    }
-    if (oc.started == (int)oc.circuits.size() && !oc.advance_scheduled &&
-        ocs_cur[pl] == cfgi) {
-        oc.advance_scheduled = true;
-        long double delta_ns = timeAsNs(oc.max_drain - eventlist.now());
-        if (delta_ns < 0) delta_ns = 0;
-        std::pair<HTSimProtoTcp*, int>* arg = new std::pair<HTSimProtoTcp*, int>(this, pl);
-        HTSimSession::instance().schedule_astra_event(delta_ns, &ocs_drain_cb, arg);
     }
 }
 
@@ -1271,7 +1352,11 @@ void HTSimProtoTcp::finish() {
             stripe_masters.empty() &&
             stripe_sub2master.empty() &&
             ocs_plan_transmitted == ocs_plan_scheduled &&
-            ocs_fallback_lookups == 0;
+            ocs_fallback_lookups == 0 &&
+            ocs_drained_configurations == ocs_expected_configurations &&
+            ocs_config_drain_records == ocs_expected_configurations &&
+            ocs_estimated_drain_events == 0 &&
+            ocs_premature_advances == 0;
         if (!complete) ocs_plan_fatal("unconsumed_or_incomplete_plan_entries");
         ocs_print_plan_audit("PASS");
     }

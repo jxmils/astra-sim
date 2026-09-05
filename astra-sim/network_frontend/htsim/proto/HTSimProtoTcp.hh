@@ -106,13 +106,17 @@ class HTSimProtoTcp final : public HTSimSession::HTSimSessionImpl {
         struct OcsCircuit { int src; int dst; uint64_t bytes;
                             std::string flow_uid; std::string stripe_uid; };
         struct OcsCfg { int round; std::vector<OcsCircuit> circuits;
-                        int remaining; int started = 0;
-                        simtime_picosec max_drain = 0; bool advance_scheduled = false;
+                        int remaining; int started = 0; int completed = 0;
+                        simtime_picosec last_start = 0;
+                        simtime_picosec first_complete = 0;
+                        simtime_picosec last_complete = 0;
+                        bool has_completion = false;
                         std::vector<std::pair<int,int>> matching;   // installed pairs
                         bool force_reconf = false;
                          int phase = 0;  // 1 fold, 2 unfold
                          bool synchronize = false;
-                        bool drained = false; };
+                        bool drained = false;
+                        bool drain_reported = false; };
         std::vector<std::vector<OcsCfg>> ocs_cfgs;      // [plane][seq]
         std::vector<int> ocs_cur;                        // installed cfg index
         std::vector<bool> ocs_dark;                      // reconfiguring
@@ -160,6 +164,8 @@ class HTSimProtoTcp final : public HTSimSession::HTSimSessionImpl {
         bool matching_changed(const OcsCfg& a, const OcsCfg& b);
         void ocs_advance_after_drain(int plane);
         void ocs_drain_reached(int plane);
+        void ocs_print_config_drain(int plane, int configuration,
+                                    simtime_picosec advance_time);
         void ocs_note_started(int flow_id, uint64_t bytes, linkspeed_bps plane_rate);
         void ocs_note_stripe_completed(int flow_id);
         void ocs_print_plan_audit(const char* status);
@@ -172,6 +178,11 @@ class HTSimProtoTcp final : public HTSimSession::HTSimSessionImpl {
             uint32_t physical_destination);
         virtual void flow_done(int flow_id);
         simtime_picosec ocs_wait_total = 0;
+        uint64_t ocs_expected_configurations = 0;
+        uint64_t ocs_drained_configurations = 0;
+        uint64_t ocs_config_drain_records = 0;
+        uint64_t ocs_estimated_drain_events = 0;
+        uint64_t ocs_premature_advances = 0;
         // --- Panel mode: grid fabrics + switch planes with policy routing ---
         // Selected by `-panel <mesh2d|torus2d|mesh3d|torus3d|hybrid|fullswitch>`
         // in --htsim_opts. When null, behaviour is the stock fat-tree path.
