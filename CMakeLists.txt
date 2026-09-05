@@ -72,11 +72,7 @@ target_include_directories(AstraSim PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/extern/gr
 target_include_directories(AstraSim PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/extern/graph_frontend/chakra/schema/protobuf)
 target_include_directories(AstraSim PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/extern/graph_frontend/chakra/src/third_party/utils)
 target_include_directories(AstraSim PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/extern/helper/)
-
-# Same as above.
-if(DEFINED ENV{PROTOBUF_FROM_SOURCE} AND "$ENV{PROTOBUF_FROM_SOURCE}" STREQUAL "True")
-    target_include_directories(AstraSim PUBLIC ${Protobuf_INCLUDE_DIRS})
-endif()
+target_include_directories(AstraSim PUBLIC ${Protobuf_INCLUDE_DIRS})
 
 # Properties
 set_target_properties(AstraSim PROPERTIES COMPILE_WARNING_AS_ERROR OFF)
