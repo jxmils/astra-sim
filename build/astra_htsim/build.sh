@@ -73,7 +73,7 @@ fi
 function compile_astrasim_htsim() {
   # compile AstraSim
   cd "${BUILD_DIR:?}" || exit
-  cmake ..
+  cmake .. -DCMAKE_BUILD_TYPE=Release
   cmake --build . -j "${NUM_THREADS:?}"
 }
 
