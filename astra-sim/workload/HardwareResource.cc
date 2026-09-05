@@ -6,18 +6,30 @@ LICENSE file in the root directory of this source tree.
 // TODO: HardwareResource.cc should be moved to the system layer.
 
 #include "astra-sim/workload/HardwareResource.hh"
-#include <cstdlib>
-// ASTRA_CONCURRENT_SENDS=1: explicit COMM_SEND nodes do not take the per-NPU comm slot
-static bool concurrent_sends() { static int v = -1; if (v < 0) { const char* e = getenv("ASTRA_CONCURRENT_SENDS"); v = (e && *e == '1') ? 1 : 0; } return v == 1; }
-static bool exempt(const std::shared_ptr<Chakra::ETFeederNode>& node) {
-    return node->type() == ChakraProtoMsg::COMM_RECV_NODE || (concurrent_sends() && node->type() == ChakraProtoMsg::COMM_SEND_NODE);
-}
 
 using namespace std;
 using namespace AstraSim;
 using namespace Chakra;
 
 typedef ChakraProtoMsg::NodeType ChakraNodeType;
+
+namespace {
+ChakraSendAdmission chakra_send_admission = ChakraSendAdmission::Serialized;
+
+bool exempt(const shared_ptr<Chakra::ETFeederNode>& node) {
+    return node->type() == ChakraNodeType::COMM_RECV_NODE ||
+           (chakra_send_admission == ChakraSendAdmission::Concurrent &&
+            node->type() == ChakraNodeType::COMM_SEND_NODE);
+}
+}  // namespace
+
+void AstraSim::set_chakra_send_admission(ChakraSendAdmission admission) {
+    chakra_send_admission = admission;
+}
+
+ChakraSendAdmission AstraSim::get_chakra_send_admission() {
+    return chakra_send_admission;
+}
 
 HardwareResource::HardwareResource(uint32_t num_npus)
     : num_npus(num_npus),

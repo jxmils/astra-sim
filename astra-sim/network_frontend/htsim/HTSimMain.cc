@@ -5,8 +5,10 @@ LICENSE file in the root directory of this source tree.
 
 #include "HTSimNetworkApi.hh"
 #include "astra-sim/common/Logging.hh"
+#include "astra-sim/workload/HardwareResource.hh"
 #include "common/CmdLineParser.hh"
 #include "HTSimSession.hh"
+#include <cstdlib>
 #include <astra-network-analytical/common/EventQueue.h>
 #include <astra-network-analytical/common/NetworkParser.h>
 #include <astra-network-analytical/congestion_unaware/Helper.h>
@@ -14,13 +16,56 @@ LICENSE file in the root directory of this source tree.
 
 using namespace HTSim;
 
+namespace {
+void print_backend_capabilities(const std::string& admission) {
+    std::cout
+        << "BACKEND_CAPABILITIES"
+        << " backend_contract=1"
+        << " concurrent_chakra_sends=1"
+        << " chakra_send_admission=" << admission
+        << " ocs_advance=estimated_serialization_drain"
+        << " ocs_plan_schema=5"
+        << " plan_lookup=legacy_fallback"
+        << " plan_fail_open=1"
+        << " initial_ocs_state=plan_controlled"
+        << std::endl;
+}
+}  // namespace
+
 int main(int argc, char* argv[]) {
     // Parse command line arguments
     auto cmd_line_parser = CmdLineParser(argv[0]);
     cmd_line_parser.get_options().add_options()(
         "htsim-proto", "HTSim Network Protocol [tcp]",
-        cxxopts::value<HTSimProto>()->default_value("tcp"));
+        cxxopts::value<HTSimProto>()->default_value("tcp"))(
+        "chakra-send-admission", "Explicit Chakra send admission [serialized|concurrent]",
+        cxxopts::value<std::string>()->default_value("serialized"))(
+        "print-backend-capabilities", "Print backend capabilities and exit",
+        cxxopts::value<bool>()->default_value("false"));
     cmd_line_parser.parse(argc, argv);
+
+    if (std::getenv("ASTRA_CONCURRENT_SENDS") != nullptr) {
+        std::cerr << "[Error] ASTRA_CONCURRENT_SENDS is no longer supported; use "
+                  << "--chakra-send-admission=concurrent" << std::endl;
+        return 2;
+    }
+
+    const auto chakra_send_admission =
+        cmd_line_parser.get<std::string>("chakra-send-admission");
+    if (chakra_send_admission == "concurrent") {
+        AstraSim::set_chakra_send_admission(AstraSim::ChakraSendAdmission::Concurrent);
+    } else if (chakra_send_admission == "serialized") {
+        AstraSim::set_chakra_send_admission(AstraSim::ChakraSendAdmission::Serialized);
+    } else {
+        std::cerr << "[Error] invalid --chakra-send-admission value: "
+                  << chakra_send_admission << std::endl;
+        return 2;
+    }
+
+    print_backend_capabilities(chakra_send_admission);
+    if (cmd_line_parser.get<bool>("print-backend-capabilities")) {
+        return 0;
+    }
 
     // Get command line arguments
     const auto workload_configuration = cmd_line_parser.get<std::string>("workload-configuration");

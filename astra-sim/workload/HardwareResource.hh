@@ -14,6 +14,14 @@ LICENSE file in the root directory of this source tree.
 
 namespace AstraSim {
 
+enum class ChakraSendAdmission {
+    Serialized,
+    Concurrent,
+};
+
+void set_chakra_send_admission(ChakraSendAdmission admission);
+ChakraSendAdmission get_chakra_send_admission();
+
 class HardwareResource {
   public:
     HardwareResource(uint32_t num_npus);
