@@ -1352,6 +1352,7 @@ void HTSimProtoTcp::finish() {
             ocs_identity.stripe_slots.empty() &&
             ocs_runtime_flow_uid.empty() &&
             ocs_runtime_stripe_uid.empty() &&
+            ocs_flow_cfg.empty() &&
             stripe_masters.empty() &&
             stripe_sub2master.empty() &&
             ocs_plan_transmitted == ocs_plan_scheduled &&
