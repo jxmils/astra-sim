@@ -27,8 +27,9 @@ void print_backend_capabilities(const std::string& admission) {
         << " ocs_plan_schema=6"
         << " exact_flow_identity=1"
         << " exact_stripe_identity=1"
-        << " plan_lookup=exact_identity_preferred"
-        << " plan_fail_open=1"
+        << " plan_lookup=exact"
+        << " plan_fail_open=0"
+        << " plan_end_audit=1"
         << " initial_ocs_state=plan_controlled"
         << std::endl;
 }

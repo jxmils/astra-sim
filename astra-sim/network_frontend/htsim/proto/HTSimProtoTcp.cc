@@ -344,16 +344,86 @@ if (!panel_kind.empty()) {
         ff->net_paths = net_paths;
 }
 
+void HTSimProtoTcp::ocs_print_plan_audit(const char* status) {
+    if (ocs_audit_printed) return;
+    ocs_audit_printed = true;
+    std::cout << "OCS_PLAN_AUDIT"
+              << " expected_flows=" << ocs_expected_flows.size()
+              << " started_flows=" << ocs_started_flows.size()
+              << " completed_flows=" << ocs_completed_flows.size()
+              << " expected_stripes=" << ocs_expected_stripes.size()
+              << " started_stripes=" << ocs_started_stripes.size()
+              << " completed_stripes=" << ocs_completed_stripes.size()
+              << " expected_slots=" << ocs_expected_stripes.size()
+              << " consumed_slots=" << ocs_consumed_slots.size()
+              << " fallback_lookups=" << ocs_fallback_lookups
+              << " status=" << status << std::endl;
+}
+
+[[noreturn]] void HTSimProtoTcp::ocs_plan_fatal(const std::string& reason) {
+    std::cerr << "OCS_PLAN_FATAL reason=" << reason << std::endl;
+    ocs_print_plan_audit("FAIL");
+    std::exit(3);
+}
+
+void HTSimProtoTcp::ocs_validate_active_stripe(
+        const OcsPlanData::Asn& assignment,
+        const OcsPlanData::Stripe& stripe,
+        const std::pair<int, int>& slot,
+        uint32_t physical_source,
+        uint32_t physical_destination) {
+    const int plane = slot.first;
+    const int configuration = slot.second;
+    if (plane < 0 || plane >= (int)ocs_cfgs.size() ||
+        configuration < 0 || configuration >= (int)ocs_cfgs[plane].size()) {
+        ocs_plan_fatal("stripe_slot_out_of_range");
+    }
+    if (stripe.plane != plane) ocs_plan_fatal("wrong_plane");
+
+    const OcsCfg& configured = ocs_cfgs[plane][configuration];
+    if (configured.round != assignment.round)
+        ocs_plan_fatal("wrong_round_or_configuration");
+    if (std::find(configured.matching.begin(), configured.matching.end(),
+                  std::make_pair((int)physical_source,
+                                 (int)physical_destination)) ==
+        configured.matching.end()) {
+        ocs_plan_fatal("flow_outside_installed_matching");
+    }
+
+    bool exact_circuit = false;
+    for (const auto& circuit : configured.circuits) {
+        if (circuit.stripe_uid == stripe.stripe_uid &&
+            circuit.flow_uid == assignment.flow_uid &&
+            circuit.src == (int)physical_source &&
+            circuit.dst == (int)physical_destination &&
+            circuit.bytes == stripe.bytes) {
+            exact_circuit = true;
+            break;
+        }
+    }
+    if (!exact_circuit) ocs_plan_fatal("stripe_circuit_mismatch");
+
+    switch (classify_ocs_slot_state(
+            configuration, ocs_cur[plane], ocs_dark[plane])) {
+        case OcsSlotState::Active: break;
+        case OcsSlotState::Stale: ocs_plan_fatal("stale_past_round");
+        case OcsSlotState::Future: ocs_plan_fatal("configuration_not_active");
+        case OcsSlotState::Dark:
+            ocs_plan_fatal("matching_reconfiguration_in_progress");
+    }
+}
 
 void HTSimProtoTcp::load_ocs_plan() {
     OcsPlanData plan;
     std::string err;
     if (!load_ocs_plan_file(ocs_plan_path, plan, err)) {
-        std::cerr << "OCS plan load failed: " << err << std::endl; exit(1);
+        ocs_plan_fatal("plan_load_failed:" + err);
+    }
+    if (plan.endpoints != (int)no_of_nodes) {
+        ocs_plan_fatal("endpoint_count_mismatch");
     }
     if (plan.planes != panel_planes) {
-        std::cerr << "Plan planes " << plan.planes << " != topology planes "
-                  << panel_planes << std::endl; exit(1);
+        ocs_plan_fatal("plane_count_mismatch");
     }
     ocs_plan_reconf_ns = plan.reconfiguration_ns;
     if (ocs_reconf != 10000) { ocs_plan_reconf_ns = timeAsNs(ocs_reconf); }
@@ -364,8 +434,12 @@ void HTSimProtoTcp::load_ocs_plan() {
     ocs_dark.assign(plan.planes, false);
     std::string identity_error;
     if (!build_ocs_plan_identity_index(plan, ocs_identity, identity_error)) {
-        std::cerr << "OCS plan identity index failed: " << identity_error
-                  << std::endl; exit(1);
+        ocs_plan_fatal("identity_index_failed:" + identity_error);
+    }
+    for (const auto& assignment : plan.assignments_full) {
+        ocs_expected_flows.insert(assignment.flow_uid);
+        for (const auto& stripe : assignment.stripes)
+            ocs_expected_stripes.insert(stripe.stripe_uid);
     }
     for (size_t k = 0; k < plan.configurations.size(); k++) {
         const OcsPlanData::Cfg& src = plan.configurations[k];
@@ -375,7 +449,6 @@ void HTSimProtoTcp::load_ocs_plan() {
         oc.phase = src.phase;
         oc.synchronize = src.synchronize;
         int pl = src.plane;
-        int cidx = (int)ocs_cfgs[pl].size();
         for (size_t q = 0; q < src.circuits.size(); q++) {
             int s = src.circuits[q].src;
             int d = src.circuits[q].dst;
@@ -385,30 +458,9 @@ void HTSimProtoTcp::load_ocs_plan() {
             circuit.flow_uid = src.circuits[q].flow_uid;
             circuit.stripe_uid = src.circuits[q].stripe_uid;
             oc.circuits.push_back(circuit);
-            ocs_slots[std::make_tuple(s, d, b, src.stream)].push_back({pl, cidx});
         }
         oc.remaining = (int)oc.circuits.size();
         ocs_cfgs[pl].push_back(oc);
-    }
-    for (size_t k = 0; k < plan.assignments.size(); k++) {
-        ocs_route_kind[std::make_tuple(std::get<0>(plan.assignments[k]),
-                                       std::get<1>(plan.assignments[k]),
-                                       std::get<2>(plan.assignments[k]))]
-            .push_back(std::get<3>(plan.assignments[k]) ? 'D' : 'O');
-    }
-    for (size_t k = 0; k < plan.assignments_full.size(); k++) {
-        const OcsPlanData::Asn& a = plan.assignments_full[k];
-        OcsAsn rec; rec.flow_uid = a.flow_uid; rec.is_direct = a.is_direct;
-        for (size_t stripe = 0; stripe < a.stripes.size(); stripe++) {
-            OcsStripe item;
-            item.stripe_uid = a.stripes[stripe].stripe_uid;
-            item.plane = a.stripes[stripe].plane;
-            item.bytes = a.stripes[stripe].bytes;
-            rec.stripes.push_back(item);
-        }
-        rec.phase = a.phase;
-        ocs_assigns[std::make_tuple(a.src, a.dst, a.bytes, a.stream)]
-            .push_back(rec);
     }
     s_self = this;
     std::cout << "OCS plan loaded: planes " << plan.planes
@@ -454,20 +506,6 @@ void HTSimProtoTcp::ocs_install_next_uncharged(int plane, bool /*counted*/) {
     ocs_plan_rounds_done++;
     ocs_cfg_times[std::make_pair(plane, ocs_cur[plane])].first =
         timeAsNs(eventlist.now());
-    auto key = std::make_pair(plane, ocs_cur[plane]);
-    auto it = ocs_held.find(key);
-    if (it != ocs_held.end()) {
-        std::vector<std::pair<HTSim::FlowInfo,int>> flows;
-        flows.swap(it->second);
-        ocs_held.erase(it);
-        ocs_releasing = true;
-        ocs_releasing_plane = plane;
-        for (size_t i = 0; i < flows.size(); i++) {
-            schedule_htsim_event(flows[i].first, flows[i].second);
-        }
-        ocs_releasing = false;
-        ocs_releasing_plane = -2;
-    }
 }
 
 static void ocs_advance_cb(void* arg) {
@@ -554,7 +592,21 @@ void HTSimProtoTcp::ocs_drain_reached(int plane) {
 }
 
 void HTSimProtoTcp::flow_done(int flow_id) {
-    ocs_flow_cfg.erase(flow_id);   // advancement is drain-driven (see ocs_drain_reached)
+    if (ocs_plan_mode) {
+        auto flow = ocs_runtime_flow_uid.find(flow_id);
+        if (flow == ocs_runtime_flow_uid.end())
+            ocs_plan_fatal("completion_for_unknown_runtime_flow");
+        if (!ocs_started_flows.count(flow->second) ||
+            !ocs_completed_flows.insert(flow->second).second) {
+            ocs_plan_fatal("flow_completed_before_start_or_more_than_once");
+        }
+        ocs_runtime_flow_uid.erase(flow);
+        if (ocs_runtime_stripe_uid.count(flow_id))
+            ocs_note_stripe_completed(flow_id);
+    }
+    // Configuration advancement remains serialization-drain-driven until the
+    // separately scoped completion-timing repair.
+    ocs_flow_cfg.erase(flow_id);
 }
 
 HTSimProtoTcp* HTSimProtoTcp::s_self = NULL;
@@ -572,6 +624,7 @@ void HTSimProtoTcp::stripe_finish_send(int, int, int, int tag) {
     int& st = stripe_sub_state[tag];
     if (st & 1) return;
     st |= 1;
+    self->ocs_note_stripe_completed(tag);
     int master = mi->second;
     if (st == 3) { stripe_sub_state.erase(tag); self->stripe_sub2master.erase(mi); }
     auto sm = self->stripe_masters.find(master);
@@ -582,6 +635,17 @@ void HTSimProtoTcp::stripe_finish_send(int, int, int, int tag) {
         HTSimSession::flow_finish_send(m.src, m.dst, (int)m.total, master);
     }
     if (m.sent_fwd && m.recv_fwd) self->stripe_masters.erase(sm);
+}
+
+void HTSimProtoTcp::ocs_note_stripe_completed(int flow_id) {
+    auto stripe = ocs_runtime_stripe_uid.find(flow_id);
+    if (stripe == ocs_runtime_stripe_uid.end())
+        ocs_plan_fatal("completion_for_unknown_runtime_stripe");
+    if (!ocs_started_stripes.count(stripe->second) ||
+        !ocs_completed_stripes.insert(stripe->second).second) {
+        ocs_plan_fatal("stripe_completed_before_start_or_more_than_once");
+    }
+    ocs_runtime_stripe_uid.erase(stripe);
 }
 
 void HTSimProtoTcp::stripe_finish_recv(int, int, int, int tag) {
@@ -660,10 +724,29 @@ static PanelTopology::Candidate* panel_route_select(
 void HTSimProtoTcp::ocs_note_started(int flow_id, uint64_t bytes,
                                      linkspeed_bps plane_rate) {
     std::map<int, std::pair<int,int>>::iterator it = ocs_flow_cfg.find(flow_id);
-    if (it == ocs_flow_cfg.end()) return;
+    if (it == ocs_flow_cfg.end()) ocs_plan_fatal("optical_start_has_no_slot");
+    auto stripe = ocs_runtime_stripe_uid.find(flow_id);
+    if (stripe == ocs_runtime_stripe_uid.end())
+        ocs_plan_fatal("optical_start_has_no_stripe_uid");
+    if (!ocs_expected_stripes.count(stripe->second) ||
+        !ocs_started_stripes.insert(stripe->second).second) {
+        ocs_plan_fatal("stripe_started_more_than_once_or_unknown");
+    }
     int pl = it->second.first, cfgi = it->second.second;
+    if (pl < 0 || pl >= (int)ocs_cfgs.size() ||
+        cfgi < 0 || cfgi >= (int)ocs_cfgs[pl].size())
+        ocs_plan_fatal("optical_start_slot_out_of_range");
+    switch (classify_ocs_slot_state(cfgi, ocs_cur[pl], ocs_dark[pl])) {
+        case OcsSlotState::Active: break;
+        case OcsSlotState::Stale: ocs_plan_fatal("stale_past_round");
+        case OcsSlotState::Future: ocs_plan_fatal("configuration_not_active");
+        case OcsSlotState::Dark:
+            ocs_plan_fatal("matching_reconfiguration_in_progress");
+    }
     OcsCfg& oc = ocs_cfgs[pl][cfgi];
     oc.started++;
+    if (oc.started > (int)oc.circuits.size())
+        ocs_plan_fatal("configuration_started_too_many_stripes");
     simtime_picosec drain = eventlist.now()
         + (simtime_picosec)((double)bytes * 8.0 * 1e12 / (double)plane_rate)
         + (simtime_picosec)(2.0 * 1500.0 * 8.0 * 1e12 / (double)plane_rate);
@@ -708,200 +791,119 @@ void HTSimProtoTcp::schedule_htsim_event(FlowInfo flow, int flow_id) {
     PanelTopology::Candidate* panel_choice = NULL;
     simtime_picosec panel_flow_delay = 0;
     int ocs_forced_plane = -2;   // -2 = not plan mode; -1 = DIRECT; >=0 plane
-    // ocs_plan_mode dispatch: consult the plan; hold flows whose configuration
-    // is not yet installed. (Uses logical->physical ids like everything else.)
-    if (panel_top && ocs_plan_mode && ocs_releasing) {
-        ocs_forced_plane = ocs_releasing_plane;
+    // Plan mode is exact-only. Internal stripe subflows are admitted solely
+    // through the runtime identity installed by their already-validated master.
+    auto internal_stripe = ocs_runtime_stripe_uid.find(flow_id);
+    if (panel_top && ocs_plan_mode &&
+        internal_stripe != ocs_runtime_stripe_uid.end()) {
+        auto configured = ocs_flow_cfg.find(flow_id);
+        if (configured == ocs_flow_cfg.end())
+            ocs_plan_fatal("internal_stripe_has_no_exact_slot");
+        const int plane = configured->second.first;
+        const int configuration = configured->second.second;
+        if (plane < 0 || plane >= (int)ocs_cfgs.size() ||
+            configuration < 0 || configuration >= (int)ocs_cfgs[plane].size())
+            ocs_plan_fatal("internal_stripe_slot_out_of_range");
+        switch (classify_ocs_slot_state(
+                configuration, ocs_cur[plane], ocs_dark[plane])) {
+            case OcsSlotState::Active: break;
+            case OcsSlotState::Stale: ocs_plan_fatal("stale_past_round");
+            case OcsSlotState::Future: ocs_plan_fatal("configuration_not_active");
+            case OcsSlotState::Dark:
+                ocs_plan_fatal("matching_reconfiguration_in_progress");
+        }
+        ocs_forced_plane = plane;
         ocs_plan_transmitted += flow.size;
     } else if (panel_top && ocs_plan_mode) {
         uint32_t ps = (panel_perm.empty() || (size_t)flow.src >= panel_perm.size())
             ? (uint32_t)flow.src : (uint32_t)panel_perm[flow.src];
         uint32_t pd = (panel_perm.empty() || (size_t)flow.dst >= panel_perm.size())
             ? (uint32_t)flow.dst : (uint32_t)panel_perm[flow.dst];
-        // Plan-v6 identity is authoritative when present. Tuple lookup remains
-        // temporarily available for Finding 3's separate fail-closed repair.
-        OcsAsn* asn = NULL;
-        bool exact_assignment_match = false;
-        {
-            static thread_local OcsAsn rec;
-            OcsPlanData::Asn exact_record;
-            if (!flow.flow_uid.empty() && consume_ocs_assignment(
-                    ocs_identity, flow.flow_uid, exact_record)) {
-                rec.flow_uid = exact_record.flow_uid;
-                rec.is_direct = exact_record.is_direct;
-                rec.phase = exact_record.phase;
-                rec.stripes.clear();
-                for (const auto& stripe : exact_record.stripes) {
-                    rec.stripes.push_back(OcsStripe{
-                        stripe.stripe_uid, stripe.plane, stripe.bytes});
-                }
-                asn = &rec;
-                exact_assignment_match = true;
-            } else {
-                auto ai = ocs_assigns.find(std::make_tuple((int)ps, (int)pd,
-                                            (uint64_t)flow.size, flow.tag));
-                if (ai == ocs_assigns.end() || ai->second.empty()) {
-                    auto lo = ocs_assigns.lower_bound(std::make_tuple(
-                        (int)ps, (int)pd, (uint64_t)flow.size, INT_MIN));
-                    for (; lo != ocs_assigns.end(); ++lo) {
-                        if (std::get<0>(lo->first) != (int)ps ||
-                            std::get<1>(lo->first) != (int)pd ||
-                            std::get<2>(lo->first) != (uint64_t)flow.size) break;
-                        if (!lo->second.empty()) { ai = lo; break; }
-                    }
-                    if (lo == ocs_assigns.end() ||
-                        std::get<0>(lo->first) != (int)ps) ai = ocs_assigns.end();
-                }
-                if (ai != ocs_assigns.end() && !ai->second.empty()) {
-                    rec = ai->second.front(); ai->second.pop_front();
-                    asn = &rec;
-                }
+        if (flow.flow_uid.empty()) ocs_plan_fatal("missing_flow_uid");
+        if (!ocs_expected_flows.count(flow.flow_uid))
+            ocs_plan_fatal("unknown_or_extra_flow_uid:" + flow.flow_uid);
+        if (ocs_started_flows.count(flow.flow_uid))
+            ocs_plan_fatal("flow_uid_consumed_twice:" + flow.flow_uid);
+
+        OcsPlanData::Asn assignment;
+        if (!consume_ocs_assignment(ocs_identity, flow.flow_uid, assignment))
+            ocs_plan_fatal("flow_uid_not_available:" + flow.flow_uid);
+        if (assignment.src != (int)ps) ocs_plan_fatal("wrong_src");
+        if (assignment.dst != (int)pd) ocs_plan_fatal("wrong_dst");
+        if (assignment.bytes != (uint64_t)flow.size)
+            ocs_plan_fatal("wrong_byte_count");
+        if (assignment.tag != flow.plan_tag) ocs_plan_fatal("wrong_tag");
+        if (ocs_runtime_flow_uid.count(flow_id))
+            ocs_plan_fatal("duplicate_runtime_flow_id");
+
+        std::vector<std::pair<int, int>> exact_slots;
+        for (const auto& stripe : assignment.stripes) {
+            if (stripe.stripe_uid.empty()) ocs_plan_fatal("missing_stripe_uid");
+            if (!ocs_expected_stripes.count(stripe.stripe_uid))
+                ocs_plan_fatal("unknown_stripe_uid:" + stripe.stripe_uid);
+            std::pair<int, int> slot(-1, -1);
+            if (!consume_ocs_stripe_slot(
+                    ocs_identity, stripe.stripe_uid, slot)) {
+                ocs_plan_fatal("stripe_uid_consumed_twice_or_missing:" +
+                               stripe.stripe_uid);
             }
+            if (!ocs_consumed_slots.insert(stripe.stripe_uid).second)
+                ocs_plan_fatal("stripe_slot_consumed_twice:" + stripe.stripe_uid);
+            ocs_validate_active_stripe(assignment, stripe, slot, ps, pd);
+            exact_slots.push_back(slot);
         }
-        if (asn && !asn->is_direct && asn->stripes.size() > 1) {
+
+        ocs_started_flows.insert(assignment.flow_uid);
+        ocs_runtime_flow_uid[flow_id] = assignment.flow_uid;
+        red_flow_phase[flow_id] = assignment.phase;
+
+        if (!assignment.is_direct && assignment.stripes.size() > 1) {
             // Striped optical transfer: split into per-plane sub-flows; ASTRA
             // sees completion when the last stripe drains.
             StripeMaster m; m.src = (int)src; m.dst = (int)dst;
             m.total = flow.size;
-            m.pending_send = m.pending_recv = (int)asn->stripes.size();
+            m.pending_send = m.pending_recv = (int)assignment.stripes.size();
             stripe_masters[flow_id] = m;
-            for (size_t si = 0; si < asn->stripes.size(); si++) {
-                int pl = asn->stripes[si].plane;
-                uint64_t sb = asn->stripes[si].bytes;
-                const std::string stripe_uid = asn->stripes[si].stripe_uid;
+            for (size_t si = 0; si < assignment.stripes.size(); si++) {
+                const auto& stripe = assignment.stripes[si];
+                const std::pair<int, int>& slot = exact_slots[si];
                 int sub = stripe_next_tag++;
                 stripe_sub2master[sub] = flow_id;
-                HTSim::FlowInfo sf = flow; sf.size = sb; sf.tag = flow.tag;
-                sf.flow_uid = stripe_uid;
-                std::pair<int,int> slot(-1, -1);
-                bool exact_stripe_match = consume_ocs_stripe_slot(
-                    ocs_identity, stripe_uid, slot);
-                if (slot.first < 0) {
-                    auto si2 = ocs_slots.find(std::make_tuple((int)ps, (int)pd,
-                                                              sb, flow.tag));
-                    if (si2 != ocs_slots.end() && !si2->second.empty()) {
-                        slot = si2->second.front(); si2->second.pop_front();
-                    }
-                }
-                if (slot.first < 0) {
-                    auto lo = ocs_slots.lower_bound(std::make_tuple((int)ps, (int)pd,
-                                                    sb, INT_MIN));
-                    for (; lo != ocs_slots.end(); ++lo) {
-                        if (std::get<0>(lo->first) != (int)ps ||
-                            std::get<1>(lo->first) != (int)pd ||
-                            std::get<2>(lo->first) != sb) break;
-                        if (!lo->second.empty()) {
-                            slot = lo->second.front(); lo->second.pop_front(); break;
-                        }
-                    }
-                }
-                if (slot.first < 0) {
-                    std::cerr << "OCS plan has no stripe slot for " << ps << "->"
-                              << pd << " bytes " << sb << std::endl;
-                    exit(3);
-                }
-                if (slot.first != pl) {
-                    std::cerr << "stripe plane mismatch: plan says " << pl
-                              << " slot says " << slot.first << std::endl;
-                }
-                std::cout << "OCS_IDENTITY flow_uid=" << asn->flow_uid
-                          << " stripe_uid=" << stripe_uid
+                ocs_runtime_stripe_uid[sub] = stripe.stripe_uid;
+                HTSim::FlowInfo sf = flow;
+                sf.size = stripe.bytes;
+                sf.flow_uid = stripe.stripe_uid;
+                std::cout << "OCS_IDENTITY flow_uid=" << assignment.flow_uid
+                          << " stripe_uid=" << stripe.stripe_uid
                           << " plane=" << slot.first
                           << " round=" << ocs_cfgs[slot.first][slot.second].round
-                          << " lookup="
-                          << ((exact_assignment_match && exact_stripe_match)
-                                  ? "exact" : "legacy")
+                          << " lookup=exact"
                           << std::endl;
                 ocs_flow_cfg[sub] = slot;
-                if (!(ocs_cur[slot.first] == slot.second && !ocs_dark[slot.first])) {
-                    ocs_held[std::make_pair(slot.first, slot.second)]
-                        .push_back({sf, sub});
-                } else {
-                    ocs_releasing = true; ocs_releasing_plane = slot.first;
-                    schedule_htsim_event(sf, sub);
-                    ocs_releasing = false; ocs_releasing_plane = -2;
-                }
+                schedule_htsim_event(sf, sub);
             }
             return;   // master flow is virtual; stripes carry the bytes
         }
-        char kind = 'O';
-        if (asn) {
-            kind = asn->is_direct ? 'D' : 'O';
-            red_flow_phase[flow_id] = asn->phase;
-        } else {
-            auto rk = ocs_route_kind.find(std::make_tuple((int)ps, (int)pd,
-                                          (uint64_t)flow.size));
-            if (rk != ocs_route_kind.end() && !rk->second.empty()) {
-                kind = rk->second.front(); rk->second.pop_front();
-            }
-        }
-        if (kind == 'D') {
+
+        if (assignment.is_direct) {
             ocs_forced_plane = -1;
-            if (asn) {
-                std::cout << "OCS_IDENTITY flow_uid=" << asn->flow_uid
-                          << " stripe_uid=- plane=-1 round=-1"
-                          << " lookup="
-                          << (exact_assignment_match ? "exact" : "legacy")
-                          << std::endl;
-            }
+            std::cout << "OCS_IDENTITY flow_uid=" << assignment.flow_uid
+                      << " stripe_uid=- plane=-1 round=-1 lookup=exact"
+                      << std::endl;
         } else {
-            std::pair<int,int> slot(-1, -1);
-            std::string stripe_uid;
-            bool exact_stripe_match = false;
-            if (asn && asn->stripes.size() == 1) {
-                stripe_uid = asn->stripes[0].stripe_uid;
-                exact_stripe_match = consume_ocs_stripe_slot(
-                    ocs_identity, stripe_uid, slot);
-            }
-            if (slot.first < 0) {
-                auto si = ocs_slots.find(std::make_tuple((int)ps, (int)pd,
-                                                         (uint64_t)flow.size, flow.tag));
-                if (si != ocs_slots.end() && !si->second.empty()) {
-                    slot = si->second.front(); si->second.pop_front();
-                }
-            }
-            if (slot.first < 0) {
-                // any-stream fallback: first non-empty deque for this (s,d,bytes)
-                auto lo = ocs_slots.lower_bound(std::make_tuple((int)ps, (int)pd,
-                                                (uint64_t)flow.size, INT_MIN));
-                for (; lo != ocs_slots.end(); ++lo) {
-                    if (std::get<0>(lo->first) != (int)ps ||
-                        std::get<1>(lo->first) != (int)pd ||
-                        std::get<2>(lo->first) != (uint64_t)flow.size) break;
-                    if (!lo->second.empty()) {
-                        slot = lo->second.front(); lo->second.pop_front(); break;
-                    }
-                }
-            }
-            if (slot.first < 0) {
-                std::cerr << "OCS plan has no slot for flow " << ps << "->" << pd
-                          << " bytes " << flow.size << " tag " << flow.tag << std::endl;
-                exit(3);
-            }
-            int pl = slot.first, cfgi = slot.second;
-            if (asn) {
-                std::cout << "OCS_IDENTITY flow_uid=" << asn->flow_uid
-                          << " stripe_uid=" << stripe_uid
-                          << " plane=" << pl
-                          << " round=" << ocs_cfgs[pl][cfgi].round
-                          << " lookup="
-                          << ((exact_assignment_match && exact_stripe_match)
-                                  ? "exact" : "legacy")
-                          << std::endl;
-            }
-            // Record before the held-return below: held flows still
-            // deliver partials and must charge the owner's reducer.
+            if (assignment.stripes.size() != 1 || exact_slots.size() != 1)
+                ocs_plan_fatal("optical_flow_has_invalid_stripe_count");
+            const auto& stripe = assignment.stripes.front();
+            const auto& slot = exact_slots.front();
+            const int pl = slot.first;
+            const int cfgi = slot.second;
+            ocs_runtime_stripe_uid[flow_id] = stripe.stripe_uid;
+            std::cout << "OCS_IDENTITY flow_uid=" << assignment.flow_uid
+                      << " stripe_uid=" << stripe.stripe_uid
+                      << " plane=" << pl
+                      << " round=" << ocs_cfgs[pl][cfgi].round
+                      << " lookup=exact" << std::endl;
             red_flow_dst[flow_id] = std::make_pair((int)pd, (uint64_t)flow.size);
-            if (!(ocs_cur[pl] == cfgi && !ocs_dark[pl])) {
-                if (cfgi < ocs_cur[pl]) {
-                    std::cerr << "Warning: flow for past config plane " << pl
-                              << " cfg " << cfgi << " (cur " << ocs_cur[pl] << ")" << std::endl;
-                } else {
-                    ocs_flow_cfg[flow_id] = slot;
-                    ocs_held[std::make_pair(pl, cfgi)].push_back({flow, flow_id});
-                    return;    // held until the configuration installs
-                }
-            }
             ocs_flow_cfg[flow_id] = slot;
             ocs_forced_plane = pl;
             ocs_plan_transmitted += flow.size;
@@ -1254,6 +1256,24 @@ void HTSimProtoTcp::finish() {
                      "bandwidth-determined. Increase -q (switch queue depth) "
                      "until this is zero." << std::endl;
         exit(2);
+    }
+    if (ocs_plan_mode) {
+        const bool complete =
+            ocs_expected_flows == ocs_started_flows &&
+            ocs_expected_flows == ocs_completed_flows &&
+            ocs_expected_stripes == ocs_started_stripes &&
+            ocs_expected_stripes == ocs_completed_stripes &&
+            ocs_expected_stripes == ocs_consumed_slots &&
+            ocs_identity.assignments.empty() &&
+            ocs_identity.stripe_slots.empty() &&
+            ocs_runtime_flow_uid.empty() &&
+            ocs_runtime_stripe_uid.empty() &&
+            stripe_masters.empty() &&
+            stripe_sub2master.empty() &&
+            ocs_plan_transmitted == ocs_plan_scheduled &&
+            ocs_fallback_lookups == 0;
+        if (!complete) ocs_plan_fatal("unconsumed_or_incomplete_plan_entries");
+        ocs_print_plan_audit("PASS");
     }
 #if USE_FIRST_FIT
     delete ff

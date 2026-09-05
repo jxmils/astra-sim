@@ -10,6 +10,7 @@
 
 struct OcsPlanData {
     int version = 0;
+    int endpoints = 0;
     int planes = 0;
     double reconfiguration_ns = 0.0;
     bool initial_reconfiguration = false;
@@ -28,8 +29,6 @@ struct OcsPlanData {
                   // 0 = unspecified, 1 = fold (into owners), 2 = unfold
                   int phase = 0; };
     std::vector<Cfg> configurations;
-    // legacy view: (src, dst, bytes, is_direct) in file order
-    std::vector<std::tuple<int,int,uint64_t,bool>> assignments;
     // Complete plan-v6 logical-flow and per-stripe identities.
     struct Asn { std::string flow_uid; int src; int dst; uint64_t bytes;
                  int tag; int stream; int round; bool is_direct;
@@ -55,3 +54,7 @@ bool consume_ocs_assignment(OcsPlanIdentityIndex& index,
 bool consume_ocs_stripe_slot(OcsPlanIdentityIndex& index,
                              const std::string& stripe_uid,
                              std::pair<int, int>& out);
+
+enum class OcsSlotState { Active, Stale, Future, Dark };
+OcsSlotState classify_ocs_slot_state(int configuration, int current,
+                                     bool dark);

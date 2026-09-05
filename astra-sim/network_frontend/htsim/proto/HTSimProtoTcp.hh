@@ -7,12 +7,11 @@
 #include <ios>
 #include <iostream>
 #include <fstream>
+#include <set>
+#include <string>
 
 #include "HTSimSessionImpl.hh"
 #include "OcsPlanLoader.hh"
-#include <deque>
-#include <tuple>
-
 #include "config.h"
 #include "clock.h"
 #include "mtcp.h"
@@ -117,17 +116,18 @@ class HTSimProtoTcp final : public HTSimSession::HTSimSessionImpl {
         std::vector<std::vector<OcsCfg>> ocs_cfgs;      // [plane][seq]
         std::vector<int> ocs_cur;                        // installed cfg index
         std::vector<bool> ocs_dark;                      // reconfiguring
-        // (src,dst,bytes,tag) -> FIFO of (plane, cfg_idx); tag==-1 fallback key
-        std::map<std::tuple<int,int,uint64_t,int>, std::deque<std::pair<int,int>>> ocs_slots;
-        std::map<std::tuple<int,int,uint64_t>, std::deque<char>> ocs_route_kind; // 'D'/'O'
-        struct OcsStripe { std::string stripe_uid; int plane; uint64_t bytes; };
-        // Exact plan-v6 assignments plus the retained legacy tuple index. The
-        // latter remains only until Finding 3 removes fail-open mismatch paths.
-        struct OcsAsn { std::string flow_uid; bool is_direct;
-                        std::vector<OcsStripe> stripes;
-                        int phase = 0; };
         OcsPlanIdentityIndex ocs_identity;
-        std::map<std::tuple<int,int,uint64_t,int>, std::deque<OcsAsn>> ocs_assigns;
+        std::set<std::string> ocs_expected_flows;
+        std::set<std::string> ocs_expected_stripes;
+        std::set<std::string> ocs_started_flows;
+        std::set<std::string> ocs_completed_flows;
+        std::set<std::string> ocs_started_stripes;
+        std::set<std::string> ocs_completed_stripes;
+        std::set<std::string> ocs_consumed_slots;
+        std::map<int, std::string> ocs_runtime_flow_uid;
+        std::map<int, std::string> ocs_runtime_stripe_uid;
+        uint64_t ocs_fallback_lookups = 0;
+        bool ocs_audit_printed = false;
         // striped-transfer master accounting: ASTRA sees one flow id; each
         // stripe is an internal sub-flow with a synthetic negative tag.
         struct StripeMaster { int src, dst; uint64_t total;
@@ -140,9 +140,6 @@ class HTSimProtoTcp final : public HTSimSession::HTSimSessionImpl {
         static void stripe_finish_send(int src, int dst, int bytes, int tag);
         static void stripe_finish_recv(int src, int dst, int bytes, int tag);
         std::map<int, std::pair<int,int>> ocs_flow_cfg;  // flow_id -> (plane,cfg)
-        std::map<std::pair<int,int>, std::vector<std::pair<HTSim::FlowInfo,int>>> ocs_held;
-        bool ocs_releasing = false;
-        int ocs_releasing_plane = -2;
         uint64_t ocs_plan_scheduled = 0, ocs_plan_transmitted = 0;
         int ocs_plan_rounds_done = 0;
         void load_ocs_plan();
@@ -164,6 +161,15 @@ class HTSimProtoTcp final : public HTSimSession::HTSimSessionImpl {
         void ocs_advance_after_drain(int plane);
         void ocs_drain_reached(int plane);
         void ocs_note_started(int flow_id, uint64_t bytes, linkspeed_bps plane_rate);
+        void ocs_note_stripe_completed(int flow_id);
+        void ocs_print_plan_audit(const char* status);
+        [[noreturn]] void ocs_plan_fatal(const std::string& reason);
+        void ocs_validate_active_stripe(
+            const OcsPlanData::Asn& assignment,
+            const OcsPlanData::Stripe& stripe,
+            const std::pair<int, int>& slot,
+            uint32_t physical_source,
+            uint32_t physical_destination);
         virtual void flow_done(int flow_id);
         simtime_picosec ocs_wait_total = 0;
         // --- Panel mode: grid fabrics + switch planes with policy routing ---

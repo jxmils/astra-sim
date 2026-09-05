@@ -249,11 +249,11 @@ bool HalvingDoubling::ready() {
     sim_request snd_req;
     snd_req.srcRank = id;
     snd_req.dstRank = packet.preferred_dest;
-    snd_req.tag = stream->stream_id;
     snd_req.reqType = UINT8;
     snd_req.vnet = this->stream->current_queue_id;
     const uint32_t plan_tag = 500000000u +
         (static_cast<uint32_t>(stream->stream_id) % 500000000u);
+    snd_req.tag = plan_tag;
     snd_req.flow_uid = make_collective_flow_uid(
         plan_tag, static_cast<uint32_t>(id), stream->plan_flow_step++);
     stream->owner->front_end_sim_send(

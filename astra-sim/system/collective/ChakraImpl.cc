@@ -28,6 +28,7 @@ void ChakraImpl::issue(shared_ptr<Chakra::ETFeederNode> node) {
         sim_request snd_req;
         snd_req.srcRank = node->comm_src();
         snd_req.dstRank = node->comm_dst();
+        snd_req.tag = node->comm_tag();
         snd_req.reqType = UINT8;
         SendPacketEventHandlerData* sehd = new SendPacketEventHandlerData;
         sehd->callable = this;

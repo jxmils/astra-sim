@@ -81,7 +81,9 @@ int HTSimNetworkApi::sim_send(void* const buffer,
     // save information about event for future
     flow_id++;
     auto flow_info = FlowInfo(
-        src, dst, count, tag, request == nullptr ? "" : request->flow_uid);
+        src, dst, count, tag, request == nullptr ? "" : request->flow_uid,
+        (request == nullptr || request->flow_uid.empty())
+            ? tag : static_cast<int>(request->tag));
 
     // Trigger HTSim to schedule flow
     HTSimSession::instance().send_flow(flow_info, flow_id, msg_handler,

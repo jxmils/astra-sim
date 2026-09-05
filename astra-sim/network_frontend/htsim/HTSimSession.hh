@@ -29,14 +29,17 @@ enum class Dir { Send, Receive };
 class FlowInfo {
     public:
     FlowInfo(int _src, int _dst, uint64_t _size, int _tag,
-             std::string _flow_uid = "")
+             std::string _flow_uid = "", int _plan_tag = -1)
      : src(_src), dst(_dst), size(_size), tag(_tag),
-       flow_uid(_flow_uid) {}
+       flow_uid(_flow_uid), plan_tag(_plan_tag) {}
     int src, dst;
     int size;
     // Tag for all flows belonging to a collective
     int tag;
     std::string flow_uid;
+    // Immutable compiler-visible tag. The rendezvous tag above can be an
+    // ASTRA-internal stream identifier and is intentionally kept separate.
+    int plan_tag;
 };
 
 struct HTSimConf {

@@ -72,10 +72,11 @@ int main(int argc, char** argv) {
     const std::string plan = R"JSON({
   "format": "panel-ocs-plan",
   "version": 6,
+  "endpoints": 6,
   "planes": 6,
   "reconfiguration_ns": 10.0,
   "rounds": [
-    {"synchronize": false, "configurations": [
+    {"index": 0, "synchronize": false, "configurations": [
       {"plane": 0, "stream": 7, "matching": [[0,1],[2,3]], "circuits": [
         {"source":0,"destination":1,"bytes":1048576,"flow_uid":"A","stripe_uid":"A.0"},
         {"source":2,"destination":3,"bytes":100,"flow_uid":"S6","stripe_uid":"S6.0"}]},
@@ -91,7 +92,7 @@ int main(int argc, char** argv) {
       {"plane": 5, "stream": 7, "matching": [[2,3]], "circuits": [
         {"source":2,"destination":3,"bytes":100,"flow_uid":"S6","stripe_uid":"S6.5"}]}
     ]},
-    {"synchronize": false, "configurations": [
+    {"index": 1, "synchronize": false, "configurations": [
       {"plane": 0, "stream": 7, "matching": [[0,1],[4,5]], "circuits": [
         {"source":0,"destination":1,"bytes":1048576,"flow_uid":"C","stripe_uid":"C.0"},
         {"source":4,"destination":5,"bytes":512,"flow_uid":"S2","stripe_uid":"S2.0"}]},
@@ -169,6 +170,15 @@ int main(int argc, char** argv) {
                  "repeated matching selects its later round slot");
     ok &= expect(!consume_ocs_assignment(index, "A", assignment),
                  "a flow identity cannot be consumed twice");
+
+    ok &= expect(classify_ocs_slot_state(2, 2, false) == OcsSlotState::Active,
+                 "active configuration is accepted");
+    ok &= expect(classify_ocs_slot_state(1, 2, false) == OcsSlotState::Stale,
+                 "past configuration is classified stale");
+    ok &= expect(classify_ocs_slot_state(3, 2, false) == OcsSlotState::Future,
+                 "future configuration is classified inactive");
+    ok &= expect(classify_ocs_slot_state(2, 2, true) == OcsSlotState::Dark,
+                 "current configuration is inactive while the plane is dark");
 
     std::string v5 = plan;
     const std::string needle = "\"version\": 6";
