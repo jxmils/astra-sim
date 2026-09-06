@@ -18,6 +18,7 @@ LICENSE file in the root directory of this source tree.
 #include <map>
 #include <set>
 #include <stdlib.h>
+#include <tuple>
 #include <unistd.h>
 
 using namespace std;
@@ -35,6 +36,22 @@ struct GlobalPlanBarrierArrival {
     int rank;
 };
 
+struct WorkloadBarrierKey {
+    uint64_t node_id;
+    std::string name;
+    std::vector<int> participants;
+
+    bool operator<(const WorkloadBarrierKey& other) const {
+        return std::tie(node_id, name, participants) <
+               std::tie(other.node_id, other.name, other.participants);
+    }
+};
+
+struct WorkloadBarrierRelease {
+    WorkloadBarrierKey key;
+    std::vector<GlobalPlanBarrierArrival> arrivals;
+};
+
 struct GlobalPlanBarrierRelease {
     int64_t completed_round;
     int64_t target_round;
@@ -43,7 +60,18 @@ struct GlobalPlanBarrierRelease {
 
 std::map<int64_t, std::vector<GlobalPlanBarrierArrival>>
     global_plan_barrier_arrivals;
+std::map<WorkloadBarrierKey, std::vector<GlobalPlanBarrierArrival>>
+    workload_barrier_arrivals;
 int64_t next_global_plan_round = 0;
+
+constexpr const char* kPlanRoundBarrierPrefix = "ocs/global-round-";
+
+bool has_reserved_plan_round_barrier_name(
+    const shared_ptr<Chakra::ETFeederNode>& node) {
+    return node->name().compare(
+               0, std::char_traits<char>::length(kPlanRoundBarrierPrefix),
+               kPlanRoundBarrierPrefix) == 0;
+}
 
 [[noreturn]] void global_plan_barrier_fatal(const std::string& reason,
                                             int rank,
@@ -53,6 +81,33 @@ int64_t next_global_plan_round = 0;
               << " rank=" << rank
               << " round=" << round << std::endl;
     std::exit(EXIT_FAILURE);
+}
+
+[[noreturn]] void workload_barrier_fatal(const std::string& reason,
+                                         int rank,
+                                         uint64_t node_id) {
+    std::cerr << "WORKLOAD_BARRIER_FATAL"
+              << " reason=" << reason
+              << " rank=" << rank
+              << " node_id=" << node_id << std::endl;
+    std::exit(EXIT_FAILURE);
+}
+
+void release_workload_barrier(void* argument) {
+    std::unique_ptr<WorkloadBarrierRelease> release(
+        static_cast<WorkloadBarrierRelease*>(argument));
+    std::cout << "WORKLOAD_BARRIER_RELEASE"
+              << " node_id=" << release->key.node_id
+              << " ranks=" << release->arrivals.size()
+              << " tick=" << Sys::boostedTick() << std::endl;
+    for (const auto& item : release->arrivals) {
+        WorkloadLayerHandlerData* wlhd = new WorkloadLayerHandlerData;
+        wlhd->sys_id = item.rank;
+        wlhd->workload = item.workload;
+        wlhd->node_id = item.node_id;
+        item.workload->sys->register_event(
+            item.workload, EventType::General, wlhd, 0);
+    }
 }
 
 void release_global_plan_round_barrier(void* argument) {
@@ -280,7 +335,12 @@ void Workload::issue_comm(shared_ptr<Chakra::ETFeederNode> node) {
 
     if (node->type() == ChakraNodeType::COMM_COLL_NODE &&
         node->comm_type() == ChakraCollectiveCommType::BARRIER) {
-        issue_global_plan_round_barrier(node);
+        if (node->has_other_attr("plan_global_round") ||
+            has_reserved_plan_round_barrier_name(node)) {
+            issue_global_plan_round_barrier(node);
+        } else {
+            issue_workload_barrier(node);
+        }
         return;
     }
 
@@ -410,6 +470,63 @@ void Workload::issue_comm(shared_ptr<Chakra::ETFeederNode> node) {
     }
 }
 
+void Workload::issue_workload_barrier(
+    shared_ptr<Chakra::ETFeederNode> node) {
+    if (node->comm_size() != 0) {
+        workload_barrier_fatal("nonzero_payload", sys->id, node->id());
+    }
+
+    std::vector<int> participants;
+    if (comm_group != nullptr) {
+        participants = comm_group->involved_NPUs;
+    } else {
+        for (const auto* participant : Sys::all_sys) {
+            if (participant != nullptr) {
+                participants.push_back(participant->id);
+            }
+        }
+    }
+    std::sort(participants.begin(), participants.end());
+    if (participants.empty() ||
+        std::adjacent_find(participants.begin(), participants.end()) !=
+            participants.end()) {
+        workload_barrier_fatal("invalid_participants", sys->id, node->id());
+    }
+    if (!std::binary_search(participants.begin(), participants.end(), sys->id)) {
+        workload_barrier_fatal("rank_not_in_group", sys->id, node->id());
+    }
+
+    const WorkloadBarrierKey key{node->id(), node->name(), participants};
+    auto& arrivals = workload_barrier_arrivals[key];
+    const auto duplicate = std::find_if(
+        arrivals.begin(), arrivals.end(),
+        [this](const GlobalPlanBarrierArrival& item) {
+            return item.rank == sys->id;
+        });
+    if (duplicate != arrivals.end()) {
+        workload_barrier_fatal("duplicate_rank", sys->id, node->id());
+    }
+    arrivals.push_back({this, node->id(), sys->id});
+    if (arrivals.size() < participants.size()) {
+        return;
+    }
+    if (arrivals.size() != participants.size()) {
+        workload_barrier_fatal("too_many_arrivals", sys->id, node->id());
+    }
+    std::set<int> ranks;
+    for (const auto& item : arrivals) {
+        ranks.insert(item.rank);
+    }
+    if (!std::equal(ranks.begin(), ranks.end(), participants.begin(),
+                    participants.end())) {
+        workload_barrier_fatal("rank_set_mismatch", sys->id, node->id());
+    }
+
+    auto* release = new WorkloadBarrierRelease{key, arrivals};
+    workload_barrier_arrivals.erase(key);
+    release_workload_barrier(release);
+}
+
 void Workload::issue_global_plan_round_barrier(
     shared_ptr<Chakra::ETFeederNode> node) {
     if (!node->has_other_attr("plan_global_round")) {
@@ -421,6 +538,11 @@ void Workload::issue_global_plan_round_barrier(
         global_plan_barrier_fatal("invalid_round", sys->id, -1);
     }
     const int64_t round = attr.int64_val();
+    const std::string expected_name =
+        "ocs/global-round-" + std::to_string(round) + "/barrier";
+    if (node->name() != expected_name) {
+        global_plan_barrier_fatal("invalid_name", sys->id, round);
+    }
     if (round != next_global_plan_round) {
         global_plan_barrier_fatal("round_not_active", sys->id, round);
     }
