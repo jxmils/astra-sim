@@ -26,6 +26,8 @@ void print_backend_capabilities(const std::string& admission) {
         << " ocs_advance=transport_completion"
         << " planned_ocs_advance=transport_completion"
         << " planned_round_release=config_activation"
+        << " ordinary_workload_barrier=communicator_rendezvous"
+        << " plan_round_barrier_discriminator=reserved_name_or_round_attr"
         << " dynamic_ocs_release=transport_completion"
         << " dynamic_ocs_estimated_release=0"
         << " ocs_plan_schema=6"
