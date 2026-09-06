@@ -362,6 +362,13 @@ void HTSimProtoTcp::ocs_print_plan_audit(const char* status) {
               << " expected_slots=" << ocs_expected_stripes.size()
               << " consumed_slots=" << ocs_consumed_slots.size()
               << " fallback_lookups=" << ocs_fallback_lookups
+              << " runtime_flows_registered=" << ocs_runtime_flows_registered
+              << " runtime_flows_started=" << ocs_runtime_flows_started
+              << " runtime_flows_completed=" << ocs_runtime_flows_completed
+              << " runtime_flows_retired=" << ocs_runtime_flows_retired
+              << " unknown_completions=" << ocs_unknown_completions
+              << " duplicate_completions=" << ocs_duplicate_completions
+              << " active_runtime_flows=" << ocs_runtime_flow_uid.size()
               << " ocs_advance_mode=transport_completion"
               << " expected_configurations=" << ocs_expected_configurations
               << " drained_configurations=" << ocs_drained_configurations
@@ -934,13 +941,42 @@ void HTSimProtoTcp::ocs_drain_reached(int plane) {
 void HTSimProtoTcp::flow_done(int flow_id) {
     if (ocs_plan_mode) {
         auto flow = ocs_runtime_flow_uid.find(flow_id);
-        if (flow == ocs_runtime_flow_uid.end())
+        if (flow == ocs_runtime_flow_uid.end()) {
+            const bool retired =
+                flow_id >= 0 &&
+                static_cast<size_t>(flow_id) <
+                    ocs_retired_runtime_flow_ids.size() &&
+                ocs_retired_runtime_flow_ids[flow_id];
+            if (retired)
+                ++ocs_duplicate_completions;
+            else
+                ++ocs_unknown_completions;
+            std::cerr << "OCS_RUNTIME_COMPLETION_ERROR"
+                      << " runtime_flow_id=" << flow_id
+                      << " classification="
+                      << (retired ? "retired" : "unknown") << std::endl;
             ocs_plan_fatal("completion_for_unknown_runtime_flow");
+        }
         if (!ocs_started_flows.count(flow->second) ||
             !ocs_completed_flows.insert(flow->second).second) {
+            ++ocs_duplicate_completions;
             ocs_plan_fatal("flow_completed_before_start_or_more_than_once");
         }
+        ++ocs_runtime_flows_completed;
         ocs_runtime_flow_uid.erase(flow);
+        if (flow_id < 0)
+            ocs_plan_fatal("invalid_negative_runtime_flow_id");
+        if (static_cast<size_t>(flow_id) >=
+            ocs_retired_runtime_flow_ids.size()) {
+            ocs_retired_runtime_flow_ids.resize(
+                static_cast<size_t>(flow_id) + 1, false);
+        }
+        if (ocs_retired_runtime_flow_ids[flow_id]) {
+            ++ocs_duplicate_completions;
+            ocs_plan_fatal("runtime_flow_retired_more_than_once");
+        }
+        ocs_retired_runtime_flow_ids[flow_id] = true;
+        ++ocs_runtime_flows_retired;
         if (ocs_runtime_stripe_uid.count(flow_id))
             ocs_note_stripe_completed(flow_id);
     }
@@ -1244,7 +1280,11 @@ void HTSimProtoTcp::schedule_htsim_event(FlowInfo flow, int flow_id) {
         if (assignment.bytes != (uint64_t)flow.size)
             ocs_plan_fatal("wrong_byte_count");
         if (assignment.tag != flow.plan_tag) ocs_plan_fatal("wrong_tag");
-        if (ocs_runtime_flow_uid.count(flow_id))
+        if (ocs_runtime_flow_uid.count(flow_id) ||
+            (flow_id >= 0 &&
+             static_cast<size_t>(flow_id) <
+                 ocs_retired_runtime_flow_ids.size() &&
+             ocs_retired_runtime_flow_ids[flow_id]))
             ocs_plan_fatal("duplicate_runtime_flow_id");
 
         std::vector<std::pair<int, int>> exact_slots;
@@ -1266,6 +1306,8 @@ void HTSimProtoTcp::schedule_htsim_event(FlowInfo flow, int flow_id) {
 
         ocs_started_flows.insert(assignment.flow_uid);
         ocs_runtime_flow_uid[flow_id] = assignment.flow_uid;
+        ++ocs_runtime_flows_registered;
+        ++ocs_runtime_flows_started;
         red_flow_phase[flow_id] = assignment.phase;
 
         if (!assignment.is_direct && assignment.stripes.size() > 1) {
@@ -1814,6 +1856,12 @@ void HTSimProtoTcp::finish() {
             ocs_estimated_drain_events == 0 &&
             ocs_premature_advances == 0 &&
             ocs_plan_round_wait_requests == ocs_plan_round_wait_releases &&
+            ocs_runtime_flows_registered == ocs_expected_flows.size() &&
+            ocs_runtime_flows_started == ocs_expected_flows.size() &&
+            ocs_runtime_flows_completed == ocs_expected_flows.size() &&
+            ocs_runtime_flows_retired == ocs_expected_flows.size() &&
+            ocs_unknown_completions == 0 &&
+            ocs_duplicate_completions == 0 &&
             ocs_initial_configuration_requests ==
                 ocs_expected_initial_configurations &&
             ocs_initial_configuration_activations ==

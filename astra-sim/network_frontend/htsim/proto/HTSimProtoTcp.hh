@@ -179,6 +179,13 @@ class HTSimProtoTcp final : public HTSimSession::HTSimSessionImpl {
         std::set<std::string> ocs_consumed_slots;
         std::map<int, std::string> ocs_runtime_flow_uid;
         std::map<int, std::string> ocs_runtime_stripe_uid;
+        std::vector<bool> ocs_retired_runtime_flow_ids;
+        uint64_t ocs_runtime_flows_registered = 0;
+        uint64_t ocs_runtime_flows_started = 0;
+        uint64_t ocs_runtime_flows_completed = 0;
+        uint64_t ocs_runtime_flows_retired = 0;
+        uint64_t ocs_unknown_completions = 0;
+        uint64_t ocs_duplicate_completions = 0;
         uint64_t ocs_fallback_lookups = 0;
         bool ocs_audit_printed = false;
         // striped-transfer master accounting: ASTRA sees one flow id; each
