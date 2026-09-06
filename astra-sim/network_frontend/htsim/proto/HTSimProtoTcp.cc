@@ -572,6 +572,38 @@ static void ocs_dynamic_initial_activate_cb(void* arg) {
     delete activation;
 }
 
+void HTSimProtoTcp::ocs_request_initial_configuration(
+        int plane, const char* request_source) {
+    if (plane < 0 || plane >= (int)ocs_cfgs.size() ||
+        ocs_cfgs[plane].empty()) {
+        ocs_plan_fatal("initial_configuration_plane_out_of_range");
+    }
+    if (ocs_initial_active[plane] || ocs_initial_requested[plane]) return;
+
+    const simtime_picosec now = eventlist.now();
+    ocs_initial_requested[plane] = true;
+    ocs_initial_request_time[plane] = now;
+    ocs_initial_ready_time[plane] = now + timeFromNs(ocs_plan_reconf_ns);
+    ++ocs_initial_configuration_requests;
+    ++ocs_reconfigs;
+    std::cout << "OCS_INITIAL_CONFIG_REQUEST"
+              << " mode=planned"
+              << " plane=" << plane
+              << " request_ns=" << timeAsNs(now)
+              << " ready_ns=" << timeAsNs(ocs_initial_ready_time[plane])
+              << " reconfiguration_ns=" << ocs_plan_reconf_ns
+              << " request_source=" << request_source
+              << std::endl;
+    if (ocs_plan_reconf_ns == 0.0) {
+        ocs_activate_initial_configuration(plane);
+    } else {
+        std::pair<HTSimProtoTcp*, int>* arg =
+            new std::pair<HTSimProtoTcp*, int>(this, plane);
+        HTSimSession::instance().schedule_astra_event(
+            ocs_plan_reconf_ns, &ocs_initial_activate_cb, arg);
+    }
+}
+
 void HTSimProtoTcp::ocs_retry_cold_waiters() {
     const size_t pending = ocs_cold_waiters.size();
     for (size_t index = 0; index < pending; ++index) {
@@ -647,6 +679,12 @@ void HTSimProtoTcp::wait_for_plan_round(
     std::cout << "PLAN_ROUND_CONFIG_WAIT"
               << " target_round=" << round
               << " tick=" << timeAsNs(eventlist.now()) << std::endl;
+    for (int plane = 0; plane < (int)ocs_cfgs.size(); ++plane) {
+        if (!ocs_cfgs[plane].empty() && ocs_cfgs[plane][0].round == round &&
+            !ocs_initial_active[plane]) {
+            ocs_request_initial_configuration(plane, "round_barrier");
+        }
+    }
 }
 
 void HTSimProtoTcp::ocs_retry_plan_round_waiters() {
@@ -686,30 +724,8 @@ bool HTSimProtoTcp::ocs_defer_for_initial_configuration(
     }
     if (pending_planes.empty()) return false;
 
-    const simtime_picosec now = eventlist.now();
     for (int plane : pending_planes) {
-        if (ocs_initial_requested[plane]) continue;
-        ocs_initial_requested[plane] = true;
-        ocs_initial_request_time[plane] = now;
-        ocs_initial_ready_time[plane] =
-            now + timeFromNs(ocs_plan_reconf_ns);
-        ++ocs_initial_configuration_requests;
-        ++ocs_reconfigs;
-        std::cout << "OCS_INITIAL_CONFIG_REQUEST"
-                  << " mode=planned"
-                  << " plane=" << plane
-                  << " request_ns=" << timeAsNs(now)
-                  << " ready_ns=" << timeAsNs(ocs_initial_ready_time[plane])
-                  << " reconfiguration_ns=" << ocs_plan_reconf_ns
-                  << std::endl;
-        if (ocs_plan_reconf_ns == 0.0) {
-            ocs_activate_initial_configuration(plane);
-        } else {
-            std::pair<HTSimProtoTcp*, int>* arg =
-                new std::pair<HTSimProtoTcp*, int>(this, plane);
-            HTSimSession::instance().schedule_astra_event(
-                ocs_plan_reconf_ns, &ocs_initial_activate_cb, arg);
-        }
+        ocs_request_initial_configuration(plane, "flow");
     }
 
     // A zero-delay activation may have made every required plane ready.
@@ -733,7 +749,7 @@ bool HTSimProtoTcp::ocs_defer_for_initial_configuration(
     std::cout << "OCS_COLD_FLOW_WAIT"
               << " flow_id=" << flow_id
               << " flow_uid=" << flow.flow_uid
-              << " queued_ns=" << timeAsNs(now)
+              << " queued_ns=" << timeAsNs(eventlist.now())
               << std::endl;
     return true;
 }
