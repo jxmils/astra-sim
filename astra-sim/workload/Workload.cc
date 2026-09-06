@@ -13,7 +13,10 @@ LICENSE file in the root directory of this source tree.
 #include "astra-sim/system/WorkloadLayerHandlerData.hh"
 #include <json/json.hpp>
 
+#include <algorithm>
 #include <iostream>
+#include <map>
+#include <set>
 #include <stdlib.h>
 #include <unistd.h>
 
@@ -24,6 +27,28 @@ using json = nlohmann::json;
 
 typedef ChakraProtoMsg::NodeType ChakraNodeType;
 typedef ChakraProtoMsg::CollectiveCommType ChakraCollectiveCommType;
+
+namespace {
+struct GlobalPlanBarrierArrival {
+    Workload* workload;
+    uint64_t node_id;
+    int rank;
+};
+
+std::map<int64_t, std::vector<GlobalPlanBarrierArrival>>
+    global_plan_barrier_arrivals;
+int64_t next_global_plan_round = 0;
+
+[[noreturn]] void global_plan_barrier_fatal(const std::string& reason,
+                                            int rank,
+                                            int64_t round) {
+    std::cerr << "PLAN_ROUND_BARRIER_FATAL"
+              << " reason=" << reason
+              << " rank=" << rank
+              << " round=" << round << std::endl;
+    std::exit(EXIT_FAILURE);
+}
+}  // namespace
 
 Workload::Workload(Sys* sys, string et_filename, string comm_group_filename) {
     string workload_filename = et_filename + "." + to_string(sys->id) + ".et";
@@ -224,6 +249,12 @@ void Workload::issue_comp(shared_ptr<Chakra::ETFeederNode> node) {
 void Workload::issue_comm(shared_ptr<Chakra::ETFeederNode> node) {
     hw_resource->occupy(node);
 
+    if (node->type() == ChakraNodeType::COMM_COLL_NODE &&
+        node->comm_type() == ChakraCollectiveCommType::BARRIER) {
+        issue_global_plan_round_barrier(node);
+        return;
+    }
+
     vector<bool> involved_dim;
 
     if (node->has_other_attr("involved_dim")) {
@@ -347,6 +378,66 @@ void Workload::issue_comm(shared_ptr<Chakra::ETFeederNode> node) {
         LoggerFactory::get_logger("workload")
             ->critical("Unknown communication node type");
         exit(EXIT_FAILURE);
+    }
+}
+
+void Workload::issue_global_plan_round_barrier(
+    shared_ptr<Chakra::ETFeederNode> node) {
+    if (!node->has_other_attr("plan_global_round")) {
+        global_plan_barrier_fatal("missing_round", sys->id, -1);
+    }
+    const ChakraProtoMsg::AttributeProto& attr =
+        node->get_other_attr("plan_global_round");
+    if (!attr.has_int64_val() || attr.int64_val() < 0) {
+        global_plan_barrier_fatal("invalid_round", sys->id, -1);
+    }
+    const int64_t round = attr.int64_val();
+    if (round != next_global_plan_round) {
+        global_plan_barrier_fatal("round_not_active", sys->id, round);
+    }
+    if (node->comm_size() != 0) {
+        global_plan_barrier_fatal("nonzero_payload", sys->id, round);
+    }
+
+    auto& arrivals = global_plan_barrier_arrivals[round];
+    const auto duplicate = std::find_if(
+        arrivals.begin(), arrivals.end(),
+        [this](const GlobalPlanBarrierArrival& item) {
+            return item.rank == sys->id;
+        });
+    if (duplicate != arrivals.end()) {
+        global_plan_barrier_fatal("duplicate_rank", sys->id, round);
+    }
+    arrivals.push_back({this, node->id(), sys->id});
+
+    if (arrivals.size() < Sys::all_sys.size()) {
+        return;
+    }
+    if (arrivals.size() != Sys::all_sys.size()) {
+        global_plan_barrier_fatal("too_many_arrivals", sys->id, round);
+    }
+    std::set<int> ranks;
+    for (const auto& item : arrivals) {
+        ranks.insert(item.rank);
+    }
+    if (ranks.size() != Sys::all_sys.size()) {
+        global_plan_barrier_fatal("rank_set_mismatch", sys->id, round);
+    }
+
+    const auto release = arrivals;
+    global_plan_barrier_arrivals.erase(round);
+    ++next_global_plan_round;
+    std::cout << "PLAN_ROUND_BARRIER_RELEASE"
+              << " round=" << round
+              << " ranks=" << release.size()
+              << " tick=" << Sys::boostedTick() << std::endl;
+    for (const auto& item : release) {
+        WorkloadLayerHandlerData* wlhd = new WorkloadLayerHandlerData;
+        wlhd->sys_id = item.rank;
+        wlhd->workload = item.workload;
+        wlhd->node_id = item.node_id;
+        item.workload->sys->register_event(
+            item.workload, EventType::General, wlhd, 0);
     }
 }
 

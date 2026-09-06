@@ -37,6 +37,8 @@ class Workload : public Callable {
     void issue_remote_mem(std::shared_ptr<Chakra::ETFeederNode> node);
     void issue_comp(std::shared_ptr<Chakra::ETFeederNode> node);
     void issue_comm(std::shared_ptr<Chakra::ETFeederNode> node);
+    void issue_global_plan_round_barrier(
+        std::shared_ptr<Chakra::ETFeederNode> node);
     void skip_invalid(std::shared_ptr<Chakra::ETFeederNode> node);
     void call(EventType event, CallData* data);
     void fire();
