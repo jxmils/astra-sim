@@ -73,6 +73,11 @@ bool has_reserved_plan_round_barrier_name(
                kPlanRoundBarrierPrefix) == 0;
 }
 
+bool is_plan_round_barrier(const shared_ptr<Chakra::ETFeederNode>& node) {
+    return node->has_other_attr("plan_global_round") ||
+           has_reserved_plan_round_barrier_name(node);
+}
+
 [[noreturn]] void global_plan_barrier_fatal(const std::string& reason,
                                             int rank,
                                             int64_t round) {
@@ -331,18 +336,18 @@ void Workload::issue_comp(shared_ptr<Chakra::ETFeederNode> node) {
 }
 
 void Workload::issue_comm(shared_ptr<Chakra::ETFeederNode> node) {
-    hw_resource->occupy(node);
-
     if (node->type() == ChakraNodeType::COMM_COLL_NODE &&
         node->comm_type() == ChakraCollectiveCommType::BARRIER) {
-        if (node->has_other_attr("plan_global_round") ||
-            has_reserved_plan_round_barrier_name(node)) {
+        if (is_plan_round_barrier(node)) {
+            hw_resource->occupy(node);
             issue_global_plan_round_barrier(node);
         } else {
             issue_workload_barrier(node);
         }
         return;
     }
+
+    hw_resource->occupy(node);
 
     vector<bool> involved_dim;
 
@@ -636,7 +641,13 @@ void Workload::call(EventType event, CallData* data) {
                             node->name(), static_cast<uint64_t>(node->type()));
             }
 
-            hw_resource->release(node);
+            const bool ordinary_workload_barrier =
+                node->type() == ChakraNodeType::COMM_COLL_NODE &&
+                node->comm_type() == ChakraCollectiveCommType::BARRIER &&
+                !is_plan_round_barrier(node);
+            if (!ordinary_workload_barrier) {
+                hw_resource->release(node);
+            }
 
             et_feeder->freeChildrenNodes(node->id());
 
