@@ -16,6 +16,8 @@ class HTSimSession::HTSimSessionImpl {
         // OCS plan executor to advance plane configurations.
         virtual void flow_done(int flow_id) {}
         virtual void schedule_htsim_event(FlowInfo flow, int flow_id) = 0;
+        virtual void wait_for_plan_round(
+            int64_t round, EventHandler msg_handler, void* fun_arg) = 0;
 
         void stop_simulation();
 };

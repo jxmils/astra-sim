@@ -368,6 +368,9 @@ void HTSimProtoTcp::ocs_print_plan_audit(const char* status) {
               << " config_drain_records=" << ocs_config_drain_records
               << " estimated_drain_events=" << ocs_estimated_drain_events
               << " premature_advances=" << ocs_premature_advances
+              << " round_wait_requests=" << ocs_plan_round_wait_requests
+              << " round_wait_releases=" << ocs_plan_round_wait_releases
+              << " pending_round_waiters=" << ocs_plan_round_waiters.size()
               << " status=" << status << std::endl;
 }
 
@@ -533,6 +536,7 @@ void HTSimProtoTcp::ocs_activate_initial_configuration(int plane) {
               << timeAsNs(eventlist.now() - ocs_initial_request_time[plane])
               << std::endl;
     ocs_retry_cold_waiters();
+    ocs_retry_plan_round_waiters();
 }
 
 static void ocs_initial_activate_cb(void* arg) {
@@ -597,6 +601,65 @@ void HTSimProtoTcp::ocs_retry_cold_waiters() {
         ocs_cold_queued_flow_ids.erase(waiter.flow_id);
         ocs_cold_queued_flow_uids.erase(waiter.flow.flow_uid);
         schedule_htsim_event(waiter.flow, waiter.flow_id);
+    }
+}
+
+bool HTSimProtoTcp::ocs_plan_round_active(int64_t round) {
+    for (int plane = 0; plane < (int)ocs_cfgs.size(); ++plane) {
+        int target = -1;
+        for (int configuration = 0;
+             configuration < (int)ocs_cfgs[plane].size();
+             ++configuration) {
+            if (ocs_cfgs[plane][configuration].round == round) {
+                if (target != -1) {
+                    ocs_plan_fatal("duplicate_plane_configuration_for_round");
+                }
+                target = configuration;
+            }
+        }
+        if (target == -1) continue;
+        if (ocs_cur[plane] > target) {
+            ocs_plan_fatal("plan_round_activation_became_stale");
+        }
+        if (ocs_cur[plane] != target || ocs_dark[plane]) return false;
+    }
+    // A direct-only or terminal round requires no optical activation.
+    return true;
+}
+
+void HTSimProtoTcp::wait_for_plan_round(
+        int64_t round,
+        EventHandler msg_handler,
+        void* fun_arg) {
+    if (!ocs_plan_mode) ocs_plan_fatal("plan_round_wait_without_plan");
+    if (round < 0) ocs_plan_fatal("negative_plan_round_wait");
+    ++ocs_plan_round_wait_requests;
+    if (ocs_plan_round_active(round)) {
+        ++ocs_plan_round_wait_releases;
+        HTSimSession::instance().schedule_astra_event(
+            0.0, msg_handler, fun_arg);
+        return;
+    }
+    if (!ocs_plan_round_waiters.empty()) {
+        ocs_plan_fatal("multiple_plan_round_waiters");
+    }
+    ocs_plan_round_waiters.push_back({round, msg_handler, fun_arg});
+    std::cout << "PLAN_ROUND_CONFIG_WAIT"
+              << " target_round=" << round
+              << " tick=" << timeAsNs(eventlist.now()) << std::endl;
+}
+
+void HTSimProtoTcp::ocs_retry_plan_round_waiters() {
+    while (!ocs_plan_round_waiters.empty()) {
+        const OcsPlanRoundWaiter waiter = ocs_plan_round_waiters.front();
+        if (!ocs_plan_round_active(waiter.round)) return;
+        ocs_plan_round_waiters.pop_front();
+        std::cout << "PLAN_ROUND_CONFIG_READY"
+                  << " target_round=" << waiter.round
+                  << " tick=" << timeAsNs(eventlist.now()) << std::endl;
+        ++ocs_plan_round_wait_releases;
+        HTSimSession::instance().schedule_astra_event(
+            0.0, waiter.msg_handler, waiter.fun_arg);
     }
 }
 
@@ -721,6 +784,7 @@ void HTSimProtoTcp::ocs_install_next_uncharged(int plane, bool /*counted*/) {
     ocs_plan_rounds_done++;
     ocs_cfg_times[std::make_pair(plane, ocs_cur[plane])].first =
         timeAsNs(eventlist.now());
+    ocs_retry_plan_round_waiters();
 }
 
 static void ocs_advance_cb(void* arg) {
@@ -1733,13 +1797,15 @@ void HTSimProtoTcp::finish() {
             ocs_config_drain_records == ocs_expected_configurations &&
             ocs_estimated_drain_events == 0 &&
             ocs_premature_advances == 0 &&
+            ocs_plan_round_wait_requests == ocs_plan_round_wait_releases &&
             ocs_initial_configuration_requests ==
                 ocs_expected_initial_configurations &&
             ocs_initial_configuration_activations ==
                 ocs_expected_initial_configurations &&
             ocs_cold_waiters.empty() &&
             ocs_cold_queued_flow_ids.empty() &&
-            ocs_cold_queued_flow_uids.empty();
+            ocs_cold_queued_flow_uids.empty() &&
+            ocs_plan_round_waiters.empty();
         if (!complete) ocs_plan_fatal("unconsumed_or_incomplete_plan_entries");
         std::cout << "OCS_INITIAL_AUDIT"
                   << " mode=planned"

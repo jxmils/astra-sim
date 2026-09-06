@@ -33,6 +33,8 @@ class HTSimProtoTcp final : public HTSimSession::HTSimSessionImpl {
                        void (*msg_handler)(void* fun_arg),
                        void* fun_arg);
         void schedule_htsim_event(HTSim::FlowInfo flow, int flow_id);
+        void wait_for_plan_round(
+            int64_t round, EventHandler msg_handler, void* fun_arg) override;
 
     private:
         std::unique_ptr<Clock> c;
@@ -156,6 +158,14 @@ class HTSimProtoTcp final : public HTSimSession::HTSimSessionImpl {
         std::vector<bool> ocs_initial_active;
         std::vector<simtime_picosec> ocs_initial_request_time;
         std::vector<simtime_picosec> ocs_initial_ready_time;
+        struct OcsPlanRoundWaiter {
+            int64_t round;
+            EventHandler msg_handler;
+            void* fun_arg;
+        };
+        std::deque<OcsPlanRoundWaiter> ocs_plan_round_waiters;
+        uint64_t ocs_plan_round_wait_requests = 0;
+        uint64_t ocs_plan_round_wait_releases = 0;
         uint64_t ocs_expected_initial_configurations = 0;
         uint64_t ocs_initial_configuration_requests = 0;
         uint64_t ocs_initial_configuration_activations = 0;
@@ -193,6 +203,8 @@ class HTSimProtoTcp final : public HTSimSession::HTSimSessionImpl {
             int plane, simtime_picosec request_time,
             simtime_picosec ready_time);
         void ocs_retry_cold_waiters();
+        bool ocs_plan_round_active(int64_t round);
+        void ocs_retry_plan_round_waiters();
         // Per-configuration install/drain timestamps (ns), for causal-depth
         // analysis of tiled schedules.
         std::map<std::pair<int,int>, std::pair<double,double>> ocs_cfg_times;

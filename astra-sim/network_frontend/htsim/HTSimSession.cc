@@ -246,6 +246,13 @@ void HTSimSession::schedule_astra_event(long double when_ns,
     impl->eventlist.sourceIsPendingRel(*src, timeFromNs(when_ns));
 }
 
+void HTSimSession::wait_for_plan_round(
+        int64_t round,
+        void (*msg_handler)(void* fun_arg),
+        void* fun_arg) {
+    impl->wait_for_plan_round(round, msg_handler, fun_arg);
+}
+
 // Wrapper functions
 
 void HTSimSession::run(const HTSim::tm_info* const tm) {

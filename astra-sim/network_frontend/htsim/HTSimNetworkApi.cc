@@ -100,6 +100,14 @@ void HTSimNetworkApi::sim_schedule(timespec_t delta,
     HTSimSession::instance().schedule_astra_event(when_ns, msg_handler, fun_arg);
 }
 
+void HTSimNetworkApi::sim_wait_for_plan_round(
+        int64_t round,
+        void (*msg_handler)(void* fun_arg),
+        void* fun_arg) {
+    HTSimSession::instance().wait_for_plan_round(
+        round, msg_handler, fun_arg);
+}
+
 int HTSimNetworkApi::sim_recv(void* const buffer,
                               const uint64_t message_size,
                               const int type,

@@ -119,6 +119,8 @@ class HTSimSession {
         double get_time_ns();
         double get_time_us();
         void schedule_astra_event(long double delta, EventHandler msg_handler, void* fun_arg);
+        void wait_for_plan_round(
+            int64_t round, EventHandler msg_handler, void* fun_arg);
 
         // Used to count how many bytes were sent/received by this node.
         // Refer to sim_finish().

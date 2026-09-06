@@ -46,6 +46,18 @@ class AstraNetworkAPI {
                               void (*fun_ptr)(void* fun_arg),
                               void* fun_arg) = 0;
 
+    // A planned workload barrier completes round r and may release round r+1
+    // only after the network backend has installed that round's resources.
+    // Backends without a planned-resource executor release immediately.
+    virtual void sim_wait_for_plan_round(
+        int64_t round,
+        void (*fun_ptr)(void* fun_arg),
+        void* fun_arg) {
+        (void)round;
+        timespec_t delta{NS, 0};
+        sim_schedule(delta, fun_ptr, fun_arg);
+    }
+
     virtual BackendType get_backend_type() {
         return BackendType::NotSpecified;
     };

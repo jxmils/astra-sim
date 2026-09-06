@@ -25,6 +25,7 @@ void print_backend_capabilities(const std::string& admission) {
         << " chakra_send_admission=" << admission
         << " ocs_advance=transport_completion"
         << " planned_ocs_advance=transport_completion"
+        << " planned_round_release=config_activation"
         << " dynamic_ocs_release=transport_completion"
         << " dynamic_ocs_estimated_release=0"
         << " ocs_plan_schema=6"

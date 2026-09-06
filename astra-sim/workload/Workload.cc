@@ -35,6 +35,12 @@ struct GlobalPlanBarrierArrival {
     int rank;
 };
 
+struct GlobalPlanBarrierRelease {
+    int64_t completed_round;
+    int64_t target_round;
+    std::vector<GlobalPlanBarrierArrival> arrivals;
+};
+
 std::map<int64_t, std::vector<GlobalPlanBarrierArrival>>
     global_plan_barrier_arrivals;
 int64_t next_global_plan_round = 0;
@@ -47,6 +53,29 @@ int64_t next_global_plan_round = 0;
               << " rank=" << rank
               << " round=" << round << std::endl;
     std::exit(EXIT_FAILURE);
+}
+
+void release_global_plan_round_barrier(void* argument) {
+    std::unique_ptr<GlobalPlanBarrierRelease> release(
+        static_cast<GlobalPlanBarrierRelease*>(argument));
+    if (release->completed_round != next_global_plan_round) {
+        global_plan_barrier_fatal(
+            "release_round_not_active", -1, release->completed_round);
+    }
+    ++next_global_plan_round;
+    std::cout << "PLAN_ROUND_BARRIER_RELEASE"
+              << " round=" << release->completed_round
+              << " target_round=" << release->target_round
+              << " ranks=" << release->arrivals.size()
+              << " tick=" << Sys::boostedTick() << std::endl;
+    for (const auto& item : release->arrivals) {
+        WorkloadLayerHandlerData* wlhd = new WorkloadLayerHandlerData;
+        wlhd->sys_id = item.rank;
+        wlhd->workload = item.workload;
+        wlhd->node_id = item.node_id;
+        item.workload->sys->register_event(
+            item.workload, EventType::General, wlhd, 0);
+    }
 }
 }  // namespace
 
@@ -424,21 +453,13 @@ void Workload::issue_global_plan_round_barrier(
         global_plan_barrier_fatal("rank_set_mismatch", sys->id, round);
     }
 
-    const auto release = arrivals;
+    auto* release = new GlobalPlanBarrierRelease{
+        round, round + 1, arrivals};
     global_plan_barrier_arrivals.erase(round);
-    ++next_global_plan_round;
-    std::cout << "PLAN_ROUND_BARRIER_RELEASE"
-              << " round=" << round
-              << " ranks=" << release.size()
-              << " tick=" << Sys::boostedTick() << std::endl;
-    for (const auto& item : release) {
-        WorkloadLayerHandlerData* wlhd = new WorkloadLayerHandlerData;
-        wlhd->sys_id = item.rank;
-        wlhd->workload = item.workload;
-        wlhd->node_id = item.node_id;
-        item.workload->sys->register_event(
-            item.workload, EventType::General, wlhd, 0);
-    }
+    sys->comm_NI->sim_wait_for_plan_round(
+        release->target_round,
+        &release_global_plan_round_barrier,
+        release);
 }
 
 void Workload::skip_invalid(shared_ptr<Chakra::ETFeederNode> node) {

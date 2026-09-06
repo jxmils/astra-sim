@@ -73,6 +73,11 @@ class HTSimNetworkApi final : public CommonNetworkApi {
 
     void sim_schedule(timespec_t delta, void (*fun_ptr)(void* fun_arg), void* fun_arg) override;
 
+    void sim_wait_for_plan_round(
+        int64_t round,
+        void (*fun_ptr)(void* fun_arg),
+        void* fun_arg) override;
+
     void sim_notify_finished() override;
 
   private:
