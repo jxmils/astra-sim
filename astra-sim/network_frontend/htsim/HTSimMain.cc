@@ -36,6 +36,8 @@ void print_backend_capabilities(const std::string& admission) {
         << " plan_end_audit=1"
         << " initial_ocs_state=cold"
         << " initial_ocs_reconfiguration=uniform"
+        << " custom_link_latency=1"
+        << " ocs_plane_latency=whole_path"
         << std::endl;
 }
 }  // namespace

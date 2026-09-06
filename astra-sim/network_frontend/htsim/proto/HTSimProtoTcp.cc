@@ -140,7 +140,19 @@ HTSimProtoTcp::HTSimProtoTcp(const HTSim::tm_info* const tm, int argc, char** ar
             i++;
         } else if (!strcmp(argv[i],"-latencyNs")){
             panel_latency = timeFromNs(atof(argv[i+1]));
-            panel_plane_latency = panel_latency;
+            if (!panel_plane_latency_explicit) {
+                panel_plane_latency = panel_latency;
+            }
+            i++;
+        } else if (!strcmp(argv[i],"-planeLatencyNs")){
+            double whole_path_ns = atof(argv[i+1]);
+            if (whole_path_ns < 0.0) {
+                std::cerr << "-planeLatencyNs must be nonnegative" << std::endl;
+                exit(1);
+            }
+            panel_plane_latency =
+                panelPlaneLegLatencyFromWholePathNs(whole_path_ns);
+            panel_plane_latency_explicit = true;
             i++;
         } else if (!strcmp(argv[i],"-policy")){
             if (!strcmp(argv[i+1],"static")) panel_policy = PanelPolicy::Static;
@@ -247,7 +259,12 @@ HTSimProtoTcp::HTSimProtoTcp(const HTSim::tm_info* const tm, int argc, char** ar
 #ifdef FAT_TREE
 
 if (!panel_kind.empty()) {
-    if (panel_latency == 0) { panel_latency = timeFromNs(1000.0); panel_plane_latency = panel_latency; }
+    if (panel_latency == 0) {
+        panel_latency = timeFromNs(1000.0);
+        if (!panel_plane_latency_explicit) {
+            panel_plane_latency = panel_latency;
+        }
+    }
     PanelTopology::Base b;
     if (panel_kind == "ring1d") { b = PanelTopology::Base::Ring1D; if (panel_planes == 0) panel_planes = 2; }
     else if (panel_kind == "mesh2d") { b = PanelTopology::Base::Mesh2D; }
@@ -291,6 +308,14 @@ if (!panel_kind.empty()) {
               << " reconfNs " << timeAsNs(ocs_reconf)
               << " policy " << (panel_policy == PanelPolicy::Static ? "static" :
                  panel_policy == PanelPolicy::DirectPref ? "directpref" : "adaptive")
+              << std::endl;
+    std::cout << "PANEL_LATENCY_CONFIG"
+              << " direct_edge_ns=" << timeAsNs(panel_latency)
+              << " plane_leg_ns=" << timeAsNs(panel_plane_latency)
+              << " plane_whole_path_ns="
+              << 2.0 * timeAsNs(panel_plane_latency)
+              << " plane_whole_path_explicit="
+              << (panel_plane_latency_explicit ? 1 : 0)
               << std::endl;
 } else if (topo_file) {
 
