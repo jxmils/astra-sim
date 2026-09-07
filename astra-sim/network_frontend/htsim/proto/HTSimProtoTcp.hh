@@ -26,7 +26,6 @@ class HTSimProtoTcp final : public HTSimSession::HTSimSessionImpl {
     public:
         HTSimProtoTcp(const HTSim::tm_info* const tm, int argc, char** argv);
         void run(const HTSim::tm_info* const tm);
-        void stop_simulation();
         void finish();
         void send_flow(HTSim::FlowInfo flow,
                        int flow_id,
@@ -35,6 +34,13 @@ class HTSimProtoTcp final : public HTSimSession::HTSimSessionImpl {
         void schedule_htsim_event(HTSim::FlowInfo flow, int flow_id);
         void wait_for_plan_round(
             int64_t round, EventHandler msg_handler, void* fun_arg) override;
+
+    protected:
+        bool transport_quiescent() const override;
+        void print_transport_drain_audit(
+            const char* status,
+            simtime_picosec application_completion_time,
+            simtime_picosec drain_time) const override;
 
     private:
         std::unique_ptr<Clock> c;

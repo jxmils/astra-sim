@@ -985,6 +985,62 @@ void HTSimProtoTcp::flow_done(int flow_id) {
     ocs_flow_cfg.erase(flow_id);
 }
 
+bool HTSimProtoTcp::transport_quiescent() const {
+    if (!HTSimSession::send_waiting.empty()) return false;
+    if (!ocs_runtime_flow_uid.empty() || !ocs_runtime_stripe_uid.empty() ||
+        !stripe_masters.empty() || !stripe_sub2master.empty())
+        return false;
+    if (!ocs_dynamic_leases.empty() || !ocs_dynamic_waiters.empty() ||
+        !ocs_dynamic_queued.empty() || !ocs_dynamic_requested_at.empty())
+        return false;
+    if (!ocs_cold_waiters.empty() || !ocs_plan_round_waiters.empty())
+        return false;
+    for (size_t plane = 0; plane < ocs_up_active.size(); ++plane) {
+        for (size_t node = 0; node < ocs_up_active[plane].size(); ++node) {
+            if (ocs_up_active[plane][node] != 0 ||
+                ocs_down_active[plane][node] != 0)
+                return false;
+        }
+    }
+    return true;
+}
+
+void HTSimProtoTcp::print_transport_drain_audit(
+        const char* status,
+        simtime_picosec application_completion_time,
+        simtime_picosec drain_time) const {
+    uint64_t active_up_references = 0;
+    uint64_t active_down_references = 0;
+    for (size_t plane = 0; plane < ocs_up_active.size(); ++plane) {
+        for (size_t node = 0; node < ocs_up_active[plane].size(); ++node) {
+            active_up_references += ocs_up_active[plane][node];
+            active_down_references += ocs_down_active[plane][node];
+        }
+    }
+    const size_t pending_waiters = ocs_dynamic_waiters.size() +
+        ocs_cold_waiters.size() + ocs_plan_round_waiters.size();
+    std::cout << "HTSIM_TRANSPORT_DRAIN_AUDIT"
+              << " ranks_complete=1"
+              << " application_completion_ns="
+              << timeAsNs(application_completion_time)
+              << " drain_completion_ns=" << timeAsNs(drain_time)
+              << " active_runtime_flows=" << HTSimSession::send_waiting.size()
+              << " active_planned_runtime_flows="
+              << ocs_runtime_flow_uid.size()
+              << " active_dynamic_leases=" << ocs_dynamic_leases.size()
+              << " active_up_references=" << active_up_references
+              << " active_down_references=" << active_down_references
+              << " pending_transport_completions="
+              << HTSimSession::send_waiting.size()
+              << " pending_waiters=" << pending_waiters
+              << " unknown_completions=" << ocs_unknown_completions
+              << " duplicate_completions=" << ocs_duplicate_completions
+              << " premature_reconfigurations="
+              << (ocs_dynamic_premature_reconfigs + ocs_premature_advances)
+              << " retransmissions=" << TcpSrc::_global_rtx_count
+              << " status=" << status << std::endl;
+}
+
 void HTSimProtoTcp::ocs_release_dynamic_lease(int flow_id) {
     std::map<int, DynamicLease>::iterator lease = ocs_dynamic_leases.find(flow_id);
     if (lease == ocs_dynamic_leases.end())
@@ -1054,7 +1110,10 @@ void HTSimProtoTcp::stripe_finish_send(int, int, int, int tag) {
         m.sent_fwd = true;
         HTSimSession::flow_finish_send(m.src, m.dst, (int)m.total, master);
     }
-    if (m.sent_fwd && m.recv_fwd) self->stripe_masters.erase(sm);
+    if (m.sent_fwd && m.recv_fwd) {
+        self->stripe_masters.erase(sm);
+        HTSimSession::instance().try_stop_simulation();
+    }
 }
 
 void HTSimProtoTcp::ocs_note_stripe_completed(int flow_id) {
@@ -1114,7 +1173,10 @@ void HTSimProtoTcp::stripe_finish_recv(int, int, int, int tag) {
         m.recv_fwd = true;
         HTSimSession::flow_finish_recv(m.src, m.dst, (int)m.total, master);
     }
-    if (m.sent_fwd && m.recv_fwd) self->stripe_masters.erase(sm);
+    if (m.sent_fwd && m.recv_fwd) {
+        self->stripe_masters.erase(sm);
+        HTSimSession::instance().try_stop_simulation();
+    }
 }
 
 // Select among panel route candidates per the routing policy, mirroring the

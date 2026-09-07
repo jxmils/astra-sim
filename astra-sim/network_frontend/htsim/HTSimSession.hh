@@ -112,6 +112,7 @@ class HTSimSession {
         void run(const HTSim::tm_info* const tm);
         void finish();
         void stop_simulation();
+        void try_stop_simulation();
         void send_flow(HTSim::FlowInfo flow,
                        int flow_id,
                        EventHandler msg_handler,

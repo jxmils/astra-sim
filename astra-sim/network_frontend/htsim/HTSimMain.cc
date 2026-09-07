@@ -30,6 +30,7 @@ void print_backend_capabilities(const std::string& admission) {
         << " plan_round_barrier_discriminator=reserved_name_or_round_attr"
         << " dynamic_ocs_release=transport_completion"
         << " dynamic_ocs_estimated_release=0"
+        << " post_rank_completion=transport_quiescence_drain"
         << " ocs_plan_schema=6"
         << " exact_flow_identity=1"
         << " exact_stripe_identity=1"

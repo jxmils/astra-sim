@@ -182,6 +182,11 @@ void HTSimSession::flow_finish_send(int src_id, int dst_id, int msg_size, int fl
         // Let receiver knows that it has received packets.
         notify_receiver_receive_data(src_id, dst_id, msg_size, tag, flow_id);
     }
+
+    // Rank completion can precede the sender-side final ACK. Re-evaluate the
+    // drain gate after every transport completion so the final ACK can stop
+    // the event loop once all runtime state is quiescent.
+    HTSimSession::instance().try_stop_simulation();
 }
 
 // flow_finish is triggered by HTSim to indicate that a flow has finished.
@@ -198,6 +203,7 @@ void HTSimSession::flow_finish_recv(int src_id, int dst_id, int msg_size, int fl
 }
 
 void HTSimSession::finish() {
+    impl->audit_transport_drain();
     impl->finish();
 }
 
@@ -205,10 +211,47 @@ void HTSimSession::stop_simulation() {
     impl->stop_simulation();
 }
 
+void HTSimSession::try_stop_simulation() {
+    impl->try_stop_simulation();
+}
+
 void HTSimSession::HTSimSessionImpl::stop_simulation() {
+    if (application_complete_) return;
+
+    application_complete_ = true;
+    application_completion_time_ = eventlist.now();
+    std::cout << "HTSIM_APPLICATION_COMPLETION"
+              << " completion_ns=" << timeAsNs(application_completion_time_)
+              << std::endl;
+
+    if (!transport_quiescent()) {
+        print_transport_drain_audit(
+            "BEGIN", application_completion_time_, eventlist.now());
+    }
+    try_stop_simulation();
+}
+
+void HTSimSession::HTSimSessionImpl::try_stop_simulation() {
+    if (!application_complete_ || stop_requested_ || !transport_quiescent())
+        return;
+
+    stop_requested_ = true;
+    const simtime_picosec drain_time = eventlist.now();
+    print_transport_drain_audit(
+        "PASS", application_completion_time_, drain_time);
     std::cout << "HTSim stopping simulation..." << std::endl;
-    auto now = eventlist.now();
-    eventlist.setEndtime(now);
+    eventlist.setEndtime(drain_time);
+}
+
+void HTSimSession::HTSimSessionImpl::audit_transport_drain() {
+    if (!application_complete_) return;
+    if (stop_requested_ && transport_quiescent()) return;
+
+    print_transport_drain_audit(
+        "FAIL", application_completion_time_, eventlist.now());
+    std::cerr << "HTSIM_TRANSPORT_DRAIN_FATAL"
+              << " reason=incomplete_post_rank_transport_state" << std::endl;
+    exit(2);
 }
 
 // Constructor creates inner impl
