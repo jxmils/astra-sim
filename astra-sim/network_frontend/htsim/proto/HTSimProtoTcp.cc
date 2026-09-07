@@ -559,14 +559,17 @@ void HTSimProtoTcp::ocs_activate_initial_configuration(int plane) {
     ocs_initial_active[plane] = true;
     ++ocs_initial_configuration_activations;
     ocs_cfg_times[std::make_pair(plane, 0)].first = timeAsNs(eventlist.now());
-    std::cout << "OCS_INITIAL_CONFIG_ACTIVATE"
-              << " mode=planned"
-              << " plane=" << plane
-              << " request_ns=" << timeAsNs(ocs_initial_request_time[plane])
-              << " activation_ns=" << timeAsNs(eventlist.now())
-              << " charged_ns="
-              << timeAsNs(eventlist.now() - ocs_initial_request_time[plane])
-              << std::endl;
+    std::ostringstream record;
+    record << "OCS_INITIAL_CONFIG_ACTIVATE"
+           << " mode=planned"
+           << " plane=" << plane
+           << " request_ns=" << timeAsNs(ocs_initial_request_time[plane])
+           << " activation_ns=" << timeAsNs(eventlist.now())
+           << " charged_ns="
+           << timeAsNs(eventlist.now() - ocs_initial_request_time[plane])
+           << '\n';
+    std::cout << record.str();
+    std::cout.flush();
     ocs_retry_cold_waiters();
     ocs_retry_plan_round_waiters();
 }
@@ -586,13 +589,16 @@ void HTSimProtoTcp::ocs_note_dynamic_initial_activation(
                   << " plane=" << plane << std::endl;
         exit(2);
     }
-    std::cout << "OCS_INITIAL_CONFIG_ACTIVATE"
-              << " mode=dynamic"
-              << " plane=" << plane
-              << " request_ns=" << timeAsNs(request_time)
-              << " activation_ns=" << timeAsNs(eventlist.now())
-              << " charged_ns=" << timeAsNs(eventlist.now() - request_time)
-              << std::endl;
+    std::ostringstream record;
+    record << "OCS_INITIAL_CONFIG_ACTIVATE"
+           << " mode=dynamic"
+           << " plane=" << plane
+           << " request_ns=" << timeAsNs(request_time)
+           << " activation_ns=" << timeAsNs(eventlist.now())
+           << " charged_ns=" << timeAsNs(eventlist.now() - request_time)
+           << '\n';
+    std::cout << record.str();
+    std::cout.flush();
 }
 
 static void ocs_dynamic_initial_activate_cb(void* arg) {
