@@ -1020,7 +1020,7 @@ void HTSimProtoTcp::print_transport_drain_audit(
     const size_t pending_waiters = ocs_dynamic_waiters.size() +
         ocs_cold_waiters.size() + ocs_plan_round_waiters.size();
     std::cout << "HTSIM_TRANSPORT_DRAIN_AUDIT"
-              << " ranks_complete=1"
+              << " ranks_complete=" << no_of_nodes << "/" << no_of_nodes
               << " application_completion_ns="
               << timeAsNs(application_completion_time)
               << " drain_completion_ns=" << timeAsNs(drain_time)
@@ -1034,7 +1034,9 @@ void HTSimProtoTcp::print_transport_drain_audit(
               << HTSimSession::send_waiting.size()
               << " pending_waiters=" << pending_waiters
               << " unknown_completions=" << ocs_unknown_completions
-              << " duplicate_completions=" << ocs_duplicate_completions
+              << " duplicate_completions="
+              << (ocs_duplicate_completions +
+                  HTSimSession::duplicate_finish_count)
               << " premature_reconfigurations="
               << (ocs_dynamic_premature_reconfigs + ocs_premature_advances)
               << " retransmissions=" << TcpSrc::_global_rtx_count
