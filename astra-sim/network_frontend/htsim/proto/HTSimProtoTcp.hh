@@ -33,6 +33,7 @@ class HTSimProtoTcp final : public HTSimSession::HTSimSessionImpl {
                        void (*msg_handler)(void* fun_arg),
                        void* fun_arg);
         void schedule_htsim_event(HTSim::FlowInfo flow, int flow_id);
+        bool transport_backend_quiescent() const override;
         void wait_for_plan_round(
             int64_t round, EventHandler msg_handler, void* fun_arg) override;
 

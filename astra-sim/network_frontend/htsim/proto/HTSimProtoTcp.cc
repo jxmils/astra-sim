@@ -1016,6 +1016,26 @@ void HTSimProtoTcp::flow_done(int flow_id) {
     ocs_flow_cfg.erase(flow_id);
 }
 
+bool HTSimProtoTcp::transport_backend_quiescent() const {
+    if (!ocs_mode || ocs_plan_mode)
+        return true;
+
+    uint64_t active_up_references = 0;
+    uint64_t active_down_references = 0;
+    for (size_t plane = 0; plane < ocs_up_active.size(); ++plane) {
+        for (size_t node = 0; node < ocs_up_active[plane].size(); ++node) {
+            active_up_references += ocs_up_active[plane][node];
+            active_down_references += ocs_down_active[plane][node];
+        }
+    }
+    return ocs_dynamic_acquired == ocs_dynamic_completed &&
+           ocs_dynamic_leases.empty() && ocs_dynamic_waiters.empty() &&
+           ocs_dynamic_queued.empty() && ocs_dynamic_requested_at.empty() &&
+           active_up_references == 0 && active_down_references == 0 &&
+           ocs_dynamic_estimated_release_events == 0 &&
+           ocs_dynamic_premature_reconfigs == 0;
+}
+
 void HTSimProtoTcp::ocs_release_dynamic_lease(int flow_id) {
     std::map<int, DynamicLease>::iterator lease = ocs_dynamic_leases.find(flow_id);
     if (lease == ocs_dynamic_leases.end())

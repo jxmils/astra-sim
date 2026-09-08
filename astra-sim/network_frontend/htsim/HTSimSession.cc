@@ -163,6 +163,7 @@ void HTSimSession::notify_sender_sending_finished(int src_id,
         HTSimSession::node_bytes_sent[make_pair(src_id, Dir::Send)] += message_size;
     }
     send_event.callHandler();
+    HTSimSession::instance().impl->maybe_stop_after_transport_drain();
 }
 
 // flow_finish is triggered by HTSim to indicate that a flow has finished.
@@ -206,9 +207,37 @@ void HTSimSession::stop_simulation() {
 }
 
 void HTSimSession::HTSimSessionImpl::stop_simulation() {
+    if (application_complete)
+        return;
+    application_complete = true;
+    application_completion_time = eventlist.now();
+    std::cerr << "HTSIM_APPLICATION_COMPLETE"
+              << " completion_ps=" << application_completion_time
+              << " outstanding_sends=" << HTSimSession::send_waiting.size()
+              << std::endl;
+    maybe_stop_after_transport_drain();
+}
+
+void HTSimSession::HTSimSessionImpl::maybe_stop_after_transport_drain() {
+    if (!application_complete || transport_drain_complete ||
+        !HTSimSession::send_waiting.empty())
+        return;
+    if (!transport_backend_quiescent()) {
+        std::cerr << "HTSIM_TRANSPORT_DRAIN_FATAL"
+                  << " reason=send_callbacks_complete_backend_not_quiescent"
+                  << std::endl;
+        exit(2);
+    }
+    const simtime_picosec drain_completion_time = eventlist.now();
+    transport_drain_complete = true;
+    std::cerr << "HTSIM_TRANSPORT_DRAIN_COMPLETE"
+              << " application_completion_ps=" << application_completion_time
+              << " drain_completion_ps=" << drain_completion_time
+              << " cleanup_ps="
+              << (drain_completion_time - application_completion_time)
+              << std::endl;
     std::cout << "HTSim stopping simulation..." << std::endl;
-    auto now = eventlist.now();
-    eventlist.setEndtime(now);
+    eventlist.setEndtime(drain_completion_time);
 }
 
 // Constructor creates inner impl
