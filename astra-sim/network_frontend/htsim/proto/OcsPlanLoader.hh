@@ -10,6 +10,7 @@
 
 struct OcsPlanData {
     int version = 0;
+    std::string execution_model;
     int endpoints = 0;
     int planes = 0;
     double reconfiguration_ns = 0.0;
@@ -18,7 +19,8 @@ struct OcsPlanData {
     int rounds = 0;
     // Per configuration in file order: exact transmitted stripes plus the
     // installed matching and a forced-reconfiguration marker.
-    struct Stripe { std::string stripe_uid; int plane; uint64_t bytes; };
+    struct Stripe { std::string stripe_uid; int plane; int configuration = -1;
+                    uint64_t bytes; };
     struct Circuit { int src; int dst; uint64_t bytes;
                      std::string flow_uid; std::string stripe_uid; };
     struct Cfg { int plane; int stream; int round;
@@ -29,7 +31,7 @@ struct OcsPlanData {
                   // 0 = unspecified, 1 = fold (into owners), 2 = unfold
                   int phase = 0; };
     std::vector<Cfg> configurations;
-    // Complete plan-v6 logical-flow and per-stripe identities.
+    // Complete logical-flow and per-stripe identities for plan-v6/v7.
     struct Asn { std::string flow_uid; int src; int dst; uint64_t bytes;
                  int tag; int stream; int round; bool is_direct;
                  std::vector<Stripe> stripes; int phase = 0; };

@@ -26,13 +26,13 @@ int main(int argc, char** argv) {
         OcsPlanData loaded;
         std::string error;
         if (!load_ocs_plan_file(argv[1], loaded, error)) {
-            std::cerr << "FAIL: generated plan-v6 does not load: " << error
+            std::cerr << "FAIL: generated plan does not load: " << error
                       << std::endl;
             return 1;
         }
         OcsPlanIdentityIndex index;
         if (!build_ocs_plan_identity_index(loaded, index, error)) {
-            std::cerr << "FAIL: generated plan-v6 does not index: " << error
+            std::cerr << "FAIL: generated plan does not index: " << error
                       << std::endl;
             return 1;
         }
@@ -57,11 +57,11 @@ int main(int argc, char** argv) {
             }
         }
         if (!index.assignments.empty() || !index.stripe_slots.empty()) {
-            std::cerr << "FAIL: generated plan-v6 left unconsumed identities"
+            std::cerr << "FAIL: generated plan left unconsumed identities"
                       << std::endl;
             return 1;
         }
-        std::cout << "PASS: generated plan-v6 loader round-trip" << std::endl;
+        std::cout << "PASS: generated plan loader round-trip" << std::endl;
         return 0;
     }
     if (argc != 1) {
@@ -180,6 +180,75 @@ int main(int argc, char** argv) {
     ok &= expect(classify_ocs_slot_state(2, 2, true) == OcsSlotState::Dark,
                  "current configuration is inactive while the plane is dark");
 
+    const std::string plan_v7 = R"JSON({
+  "format": "panel-ocs-plan",
+  "version": 7,
+  "execution_model": "independent_planes",
+  "endpoints": 4,
+  "planes": 2,
+  "reconfiguration_ns": 1.0,
+  "plane_sequences": [
+    {"plane": 0, "configurations": [
+      {"sequence": 0, "stream": 10, "matching": [[0,1]], "circuits": [
+        {"source":0,"destination":1,"bytes":800,"flow_uid":"P0A","stripe_uid":"P0A.0"}]},
+      {"sequence": 1, "stream": 11, "matching": [[0,2]], "circuits": [
+        {"source":0,"destination":2,"bytes":200,"flow_uid":"P0B","stripe_uid":"P0B.0"}]}
+    ]},
+    {"plane": 1, "configurations": [
+      {"sequence": 0, "stream": 12, "matching": [[2,3]], "circuits": [
+        {"source":2,"destination":3,"bytes":500,"flow_uid":"P1A","stripe_uid":"P1A.0"}]},
+      {"sequence": 1, "stream": 13, "matching": [[2,0]], "circuits": [
+        {"source":2,"destination":0,"bytes":500,"flow_uid":"P1B","stripe_uid":"P1B.0"}]}
+    ]}
+  ],
+  "assignments": [
+    {"flow_uid":"P0A","source":0,"destination":1,"tag":10,"stream":10,"logical_bytes":800,"route":"OCS0","stripes":[{"stripe_uid":"P0A.0","plane":0,"configuration":0,"bytes":800}]},
+    {"flow_uid":"P0B","source":0,"destination":2,"tag":11,"stream":11,"logical_bytes":200,"route":"OCS0","stripes":[{"stripe_uid":"P0B.0","plane":0,"configuration":1,"bytes":200}]},
+    {"flow_uid":"P1A","source":2,"destination":3,"tag":12,"stream":12,"logical_bytes":500,"route":"OCS1","stripes":[{"stripe_uid":"P1A.0","plane":1,"configuration":0,"bytes":500}]},
+    {"flow_uid":"P1B","source":2,"destination":0,"tag":13,"stream":13,"logical_bytes":500,"route":"OCS1","stripes":[{"stripe_uid":"P1B.0","plane":1,"configuration":1,"bytes":500}]}
+  ]
+})JSON";
+    const std::string v7_path = write_fixture(plan_v7, "-v7");
+    error.clear();
+    ok &= expect(load_ocs_plan_file(v7_path, loaded, error),
+                 "plan-v7 loads: " + error);
+    ok &= expect(loaded.version == 7 &&
+                 loaded.execution_model == "independent_planes",
+                 "plan-v7 execution identity is explicit");
+    ok &= expect(loaded.rounds == 0 && loaded.configurations.size() == 4,
+                 "plan-v7 has plane-local configurations without rounds");
+    error.clear();
+    ok &= expect(build_ocs_plan_identity_index(loaded, index, error),
+                 "plan-v7 identity index builds: " + error);
+    ok &= expect(consume_ocs_assignment(index, "P1B", assignment),
+                 "plan-v7 flow identity is exact");
+    ok &= expect(consume_ocs_stripe_slot(index, "P1B.0", slot) &&
+                 slot.first == 1 && slot.second == 1,
+                 "plan-v7 stripe selects an exact plane-local sequence");
+
+    std::string rounded_v7 = plan_v7;
+    const std::string planes_needle = "\"plane_sequences\":";
+    rounded_v7.insert(
+        rounded_v7.find(planes_needle),
+        "\"rounds\": [],\n  ");
+    const std::string rounded_v7_path =
+        write_fixture(rounded_v7, "-v7-rounded");
+    error.clear();
+    ok &= expect(!load_ocs_plan_file(rounded_v7_path, loaded, error) &&
+                 error.find("cannot contain global rounds") !=
+                     std::string::npos,
+                 "plan-v7 rejects mixed global and plane-local sequencing");
+
+    std::string wrong_v7 = plan_v7;
+    const std::string model = "\"independent_planes\"";
+    wrong_v7.replace(wrong_v7.find(model), model.size(), "\"global_round\"");
+    const std::string wrong_v7_path = write_fixture(wrong_v7, "-v7-wrong");
+    error.clear();
+    ok &= expect(!load_ocs_plan_file(wrong_v7_path, loaded, error) &&
+                 error.find("execution_model=independent_planes") !=
+                     std::string::npos,
+                 "plan-v7 rejects an implicit or wrong execution model");
+
     std::string v5 = plan;
     const std::string needle = "\"version\": 6";
     v5.replace(v5.find(needle), needle.size(), "\"version\": 5");
@@ -191,6 +260,9 @@ int main(int argc, char** argv) {
 
     std::remove(path.c_str());
     std::remove(v5_path.c_str());
-    if (ok) std::cout << "PASS: exact plan-v6 identity" << std::endl;
+    std::remove(v7_path.c_str());
+    std::remove(rounded_v7_path.c_str());
+    std::remove(wrong_v7_path.c_str());
+    if (ok) std::cout << "PASS: exact plan-v6/v7 identity" << std::endl;
     return ok ? 0 : 1;
 }

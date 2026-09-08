@@ -18,6 +18,9 @@ class HTSimSession::HTSimSessionImpl {
         virtual void schedule_htsim_event(FlowInfo flow, int flow_id) = 0;
         virtual void wait_for_plan_round(
             int64_t round, EventHandler msg_handler, void* fun_arg) = 0;
+        virtual void wait_for_plan_configuration(
+            int plane, int configuration,
+            EventHandler msg_handler, void* fun_arg) = 0;
 
         void stop_simulation();
 };

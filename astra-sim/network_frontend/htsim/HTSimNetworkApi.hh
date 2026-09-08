@@ -78,6 +78,12 @@ class HTSimNetworkApi final : public CommonNetworkApi {
         void (*fun_ptr)(void* fun_arg),
         void* fun_arg) override;
 
+    void sim_wait_for_plan_configuration(
+        int plane,
+        int configuration,
+        void (*fun_ptr)(void* fun_arg),
+        void* fun_arg) override;
+
     void sim_notify_finished() override;
 
   private:

@@ -35,6 +35,9 @@ class HTSimProtoTcp final : public HTSimSession::HTSimSessionImpl {
         void schedule_htsim_event(HTSim::FlowInfo flow, int flow_id);
         void wait_for_plan_round(
             int64_t round, EventHandler msg_handler, void* fun_arg) override;
+        void wait_for_plan_configuration(
+            int plane, int configuration,
+            EventHandler msg_handler, void* fun_arg) override;
 
     private:
         std::unique_ptr<Clock> c;
@@ -128,6 +131,9 @@ class HTSimProtoTcp final : public HTSimSession::HTSimSessionImpl {
         // plane goes dark for reconfiguration_ns and installs the next one.
         std::string ocs_plan_path;
         bool ocs_plan_mode = false;
+        int ocs_plan_version = 0;
+        std::string ocs_plan_execution_model;
+        bool ocs_independent_plane_mode = false;
         bool ocs_initial_reconf = false;
         double ocs_plan_reconf_ns = 0.0;
     public:  // OCS plan executor (callback needs access)
@@ -135,7 +141,10 @@ class HTSimProtoTcp final : public HTSimSession::HTSimSessionImpl {
                             std::string flow_uid; std::string stripe_uid; };
         struct OcsCfg { int round; std::vector<OcsCircuit> circuits;
                         int remaining; int started = 0; int completed = 0;
+                        simtime_picosec activation = 0;
+                        simtime_picosec first_start = 0;
                         simtime_picosec last_start = 0;
+                        bool has_start = false;
                         simtime_picosec first_complete = 0;
                         simtime_picosec last_complete = 0;
                         bool has_completion = false;
@@ -158,14 +167,26 @@ class HTSimProtoTcp final : public HTSimSession::HTSimSessionImpl {
         std::vector<bool> ocs_initial_active;
         std::vector<simtime_picosec> ocs_initial_request_time;
         std::vector<simtime_picosec> ocs_initial_ready_time;
+        std::vector<simtime_picosec> ocs_transition_request_time;
+        std::vector<double> ocs_transition_reconfiguration_ns;
         struct OcsPlanRoundWaiter {
             int64_t round;
             EventHandler msg_handler;
             void* fun_arg;
         };
         std::deque<OcsPlanRoundWaiter> ocs_plan_round_waiters;
+        struct OcsPlanConfigurationWaiter {
+            int plane;
+            int configuration;
+            EventHandler msg_handler;
+            void* fun_arg;
+        };
+        std::deque<OcsPlanConfigurationWaiter>
+            ocs_plan_configuration_waiters;
         uint64_t ocs_plan_round_wait_requests = 0;
         uint64_t ocs_plan_round_wait_releases = 0;
+        uint64_t ocs_plan_configuration_wait_requests = 0;
+        uint64_t ocs_plan_configuration_wait_releases = 0;
         uint64_t ocs_expected_initial_configurations = 0;
         uint64_t ocs_initial_configuration_requests = 0;
         uint64_t ocs_initial_configuration_activations = 0;
@@ -214,6 +235,12 @@ class HTSimProtoTcp final : public HTSimSession::HTSimSessionImpl {
         void ocs_retry_cold_waiters();
         bool ocs_plan_round_active(int64_t round);
         void ocs_retry_plan_round_waiters();
+        bool ocs_plan_configuration_active(int plane, int configuration);
+        void ocs_retry_plan_configuration_waiters();
+        void ocs_print_plane_activation(
+            int plane, int configuration, bool cold_start,
+            simtime_picosec request_time, simtime_picosec activation_time,
+            double reconfiguration_ns);
         // Per-configuration install/drain timestamps (ns), for causal-depth
         // analysis of tiled schedules.
         std::map<std::pair<int,int>, std::pair<double,double>> ocs_cfg_times;

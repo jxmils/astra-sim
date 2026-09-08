@@ -41,6 +41,8 @@ class Workload : public Callable {
         std::shared_ptr<Chakra::ETFeederNode> node);
     void issue_global_plan_round_barrier(
         std::shared_ptr<Chakra::ETFeederNode> node);
+    void issue_plane_plan_configuration_barrier(
+        std::shared_ptr<Chakra::ETFeederNode> node);
     void skip_invalid(std::shared_ptr<Chakra::ETFeederNode> node);
     void call(EventType event, CallData* data);
     void fire();

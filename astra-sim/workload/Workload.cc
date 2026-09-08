@@ -58,13 +58,32 @@ struct GlobalPlanBarrierRelease {
     std::vector<GlobalPlanBarrierArrival> arrivals;
 };
 
+struct PlanePlanBarrierKey {
+    int plane;
+    int configuration;
+
+    bool operator<(const PlanePlanBarrierKey& other) const {
+        return std::tie(plane, configuration) <
+               std::tie(other.plane, other.configuration);
+    }
+};
+
+struct PlanePlanBarrierRelease {
+    PlanePlanBarrierKey key;
+    std::vector<GlobalPlanBarrierArrival> arrivals;
+};
+
 std::map<int64_t, std::vector<GlobalPlanBarrierArrival>>
     global_plan_barrier_arrivals;
 std::map<WorkloadBarrierKey, std::vector<GlobalPlanBarrierArrival>>
     workload_barrier_arrivals;
+std::map<PlanePlanBarrierKey, std::vector<GlobalPlanBarrierArrival>>
+    plane_plan_barrier_arrivals;
 int64_t next_global_plan_round = 0;
+std::map<int, int> next_plane_plan_configuration;
 
 constexpr const char* kPlanRoundBarrierPrefix = "ocs/global-round-";
+constexpr const char* kPlanPlaneBarrierPrefix = "ocs/plane-";
 
 bool has_reserved_plan_round_barrier_name(
     const shared_ptr<Chakra::ETFeederNode>& node) {
@@ -76,6 +95,19 @@ bool has_reserved_plan_round_barrier_name(
 bool is_plan_round_barrier(const shared_ptr<Chakra::ETFeederNode>& node) {
     return node->has_other_attr("plan_global_round") ||
            has_reserved_plan_round_barrier_name(node);
+}
+
+bool has_reserved_plan_plane_barrier_name(
+    const shared_ptr<Chakra::ETFeederNode>& node) {
+    return node->name().compare(
+               0, std::char_traits<char>::length(kPlanPlaneBarrierPrefix),
+               kPlanPlaneBarrierPrefix) == 0;
+}
+
+bool is_plan_plane_barrier(const shared_ptr<Chakra::ETFeederNode>& node) {
+    return node->has_other_attr("plan_plane") ||
+           node->has_other_attr("plan_configuration") ||
+           has_reserved_plan_plane_barrier_name(node);
 }
 
 [[noreturn]] void global_plan_barrier_fatal(const std::string& reason,
@@ -95,6 +127,18 @@ bool is_plan_round_barrier(const shared_ptr<Chakra::ETFeederNode>& node) {
               << " reason=" << reason
               << " rank=" << rank
               << " node_id=" << node_id << std::endl;
+    std::exit(EXIT_FAILURE);
+}
+
+[[noreturn]] void plane_plan_barrier_fatal(const std::string& reason,
+                                           int rank,
+                                           int plane,
+                                           int configuration) {
+    std::cerr << "PLAN_PLANE_BARRIER_FATAL"
+              << " reason=" << reason
+              << " rank=" << rank
+              << " plane=" << plane
+              << " configuration=" << configuration << std::endl;
     std::exit(EXIT_FAILURE);
 }
 
@@ -126,6 +170,31 @@ void release_global_plan_round_barrier(void* argument) {
     std::cout << "PLAN_ROUND_BARRIER_RELEASE"
               << " round=" << release->completed_round
               << " target_round=" << release->target_round
+              << " ranks=" << release->arrivals.size()
+              << " tick=" << Sys::boostedTick() << std::endl;
+    for (const auto& item : release->arrivals) {
+        WorkloadLayerHandlerData* wlhd = new WorkloadLayerHandlerData;
+        wlhd->sys_id = item.rank;
+        wlhd->workload = item.workload;
+        wlhd->node_id = item.node_id;
+        item.workload->sys->register_event(
+            item.workload, EventType::General, wlhd, 0);
+    }
+}
+
+void release_plane_plan_configuration_barrier(void* argument) {
+    std::unique_ptr<PlanePlanBarrierRelease> release(
+        static_cast<PlanePlanBarrierRelease*>(argument));
+    const int expected = next_plane_plan_configuration[release->key.plane];
+    if (release->key.configuration != expected) {
+        plane_plan_barrier_fatal(
+            "release_configuration_not_active", -1, release->key.plane,
+            release->key.configuration);
+    }
+    ++next_plane_plan_configuration[release->key.plane];
+    std::cout << "PLAN_PLANE_BARRIER_RELEASE"
+              << " plane=" << release->key.plane
+              << " configuration=" << release->key.configuration
               << " ranks=" << release->arrivals.size()
               << " tick=" << Sys::boostedTick() << std::endl;
     for (const auto& item : release->arrivals) {
@@ -338,9 +407,16 @@ void Workload::issue_comp(shared_ptr<Chakra::ETFeederNode> node) {
 void Workload::issue_comm(shared_ptr<Chakra::ETFeederNode> node) {
     if (node->type() == ChakraNodeType::COMM_COLL_NODE &&
         node->comm_type() == ChakraCollectiveCommType::BARRIER) {
-        if (is_plan_round_barrier(node)) {
+        const bool round_barrier = is_plan_round_barrier(node);
+        const bool plane_barrier = is_plan_plane_barrier(node);
+        if (round_barrier && plane_barrier) {
+            global_plan_barrier_fatal("mixed_plan_barrier_modes", sys->id, -1);
+        }
+        if (round_barrier) {
             hw_resource->occupy(node);
             issue_global_plan_round_barrier(node);
+        } else if (plane_barrier) {
+            issue_plane_plan_configuration_barrier(node);
         } else {
             issue_workload_barrier(node);
         }
@@ -589,6 +665,72 @@ void Workload::issue_global_plan_round_barrier(
         release);
 }
 
+void Workload::issue_plane_plan_configuration_barrier(
+    shared_ptr<Chakra::ETFeederNode> node) {
+    if (!node->has_other_attr("plan_plane") ||
+        !node->has_other_attr("plan_configuration")) {
+        plane_plan_barrier_fatal("missing_identity", sys->id, -1, -1);
+    }
+    const ChakraProtoMsg::AttributeProto& plane_attr =
+        node->get_other_attr("plan_plane");
+    const ChakraProtoMsg::AttributeProto& configuration_attr =
+        node->get_other_attr("plan_configuration");
+    if (!plane_attr.has_int64_val() || plane_attr.int64_val() < 0 ||
+        !configuration_attr.has_int64_val() ||
+        configuration_attr.int64_val() < 0) {
+        plane_plan_barrier_fatal("invalid_identity", sys->id, -1, -1);
+    }
+    const int plane = static_cast<int>(plane_attr.int64_val());
+    const int configuration =
+        static_cast<int>(configuration_attr.int64_val());
+    const std::string expected_name =
+        "ocs/plane-" + std::to_string(plane) + "/configuration-" +
+        std::to_string(configuration) + "/active";
+    if (node->name() != expected_name) {
+        plane_plan_barrier_fatal(
+            "invalid_name", sys->id, plane, configuration);
+    }
+    if (configuration != next_plane_plan_configuration[plane]) {
+        plane_plan_barrier_fatal(
+            "configuration_not_active", sys->id, plane, configuration);
+    }
+    if (node->comm_size() != 0) {
+        plane_plan_barrier_fatal(
+            "nonzero_payload", sys->id, plane, configuration);
+    }
+
+    const PlanePlanBarrierKey key{plane, configuration};
+    auto& arrivals = plane_plan_barrier_arrivals[key];
+    const auto duplicate = std::find_if(
+        arrivals.begin(), arrivals.end(),
+        [this](const GlobalPlanBarrierArrival& item) {
+            return item.rank == sys->id;
+        });
+    if (duplicate != arrivals.end()) {
+        plane_plan_barrier_fatal(
+            "duplicate_rank", sys->id, plane, configuration);
+    }
+    arrivals.push_back({this, node->id(), sys->id});
+    if (arrivals.size() < Sys::all_sys.size()) return;
+    if (arrivals.size() != Sys::all_sys.size()) {
+        plane_plan_barrier_fatal(
+            "too_many_arrivals", sys->id, plane, configuration);
+    }
+    std::set<int> ranks;
+    for (const auto& item : arrivals) ranks.insert(item.rank);
+    if (ranks.size() != Sys::all_sys.size()) {
+        plane_plan_barrier_fatal(
+            "rank_set_mismatch", sys->id, plane, configuration);
+    }
+
+    auto* release = new PlanePlanBarrierRelease{key, arrivals};
+    plane_plan_barrier_arrivals.erase(key);
+    sys->comm_NI->sim_wait_for_plan_configuration(
+        plane, configuration,
+        &release_plane_plan_configuration_barrier,
+        release);
+}
+
 void Workload::skip_invalid(shared_ptr<Chakra::ETFeederNode> node) {
     et_feeder->freeChildrenNodes(node->id());
     et_feeder->removeNode(node->id());
@@ -641,11 +783,14 @@ void Workload::call(EventType event, CallData* data) {
                             node->name(), static_cast<uint64_t>(node->type()));
             }
 
-            const bool ordinary_workload_barrier =
+            const bool barrier =
                 node->type() == ChakraNodeType::COMM_COLL_NODE &&
-                node->comm_type() == ChakraCollectiveCommType::BARRIER &&
-                !is_plan_round_barrier(node);
-            if (!ordinary_workload_barrier) {
+                node->comm_type() == ChakraCollectiveCommType::BARRIER;
+            const bool occupies_hardware =
+                !barrier ||
+                (is_plan_round_barrier(node) &&
+                 !is_plan_plane_barrier(node));
+            if (occupies_hardware) {
                 hw_resource->release(node);
             }
 

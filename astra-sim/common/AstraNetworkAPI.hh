@@ -58,6 +58,20 @@ class AstraNetworkAPI {
         sim_schedule(delta, fun_ptr, fun_arg);
     }
 
+    // Plan-v7 independently advancing planes wait for one exact plane-local
+    // configuration. Legacy backends release immediately; the certified HTSim
+    // executor overrides this and releases only after the matching is active.
+    virtual void sim_wait_for_plan_configuration(
+        int plane,
+        int configuration,
+        void (*fun_ptr)(void* fun_arg),
+        void* fun_arg) {
+        (void)plane;
+        (void)configuration;
+        timespec_t delta{NS, 0};
+        sim_schedule(delta, fun_ptr, fun_arg);
+    }
+
     virtual BackendType get_backend_type() {
         return BackendType::NotSpecified;
     };

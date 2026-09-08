@@ -253,6 +253,15 @@ void HTSimSession::wait_for_plan_round(
     impl->wait_for_plan_round(round, msg_handler, fun_arg);
 }
 
+void HTSimSession::wait_for_plan_configuration(
+        int plane,
+        int configuration,
+        void (*msg_handler)(void* fun_arg),
+        void* fun_arg) {
+    impl->wait_for_plan_configuration(
+        plane, configuration, msg_handler, fun_arg);
+}
+
 // Wrapper functions
 
 void HTSimSession::run(const HTSim::tm_info* const tm) {

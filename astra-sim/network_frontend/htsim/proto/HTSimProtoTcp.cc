@@ -378,6 +378,8 @@ void HTSimProtoTcp::ocs_print_plan_audit(const char* status) {
     if (ocs_audit_printed) return;
     ocs_audit_printed = true;
     std::cout << "OCS_PLAN_AUDIT"
+              << " schema=" << ocs_plan_version
+              << " execution_model=" << ocs_plan_execution_model
               << " expected_flows=" << ocs_expected_flows.size()
               << " started_flows=" << ocs_started_flows.size()
               << " completed_flows=" << ocs_completed_flows.size()
@@ -403,6 +405,12 @@ void HTSimProtoTcp::ocs_print_plan_audit(const char* status) {
               << " round_wait_requests=" << ocs_plan_round_wait_requests
               << " round_wait_releases=" << ocs_plan_round_wait_releases
               << " pending_round_waiters=" << ocs_plan_round_waiters.size()
+              << " plane_wait_requests="
+              << ocs_plan_configuration_wait_requests
+              << " plane_wait_releases="
+              << ocs_plan_configuration_wait_releases
+              << " pending_plane_waiters="
+              << ocs_plan_configuration_waiters.size()
               << " status=" << status << std::endl;
 }
 
@@ -471,6 +479,14 @@ void HTSimProtoTcp::load_ocs_plan() {
     if (plan.planes != panel_planes) {
         ocs_plan_fatal("plane_count_mismatch");
     }
+    ocs_plan_version = plan.version;
+    ocs_plan_execution_model = plan.execution_model;
+    ocs_independent_plane_mode =
+        plan.version == 7 && plan.execution_model == "independent_planes";
+    if ((plan.version == 6 && plan.execution_model != "global_round") ||
+        (plan.version == 7 && !ocs_independent_plane_mode)) {
+        ocs_plan_fatal("execution_model_mismatch");
+    }
     ocs_plan_reconf_ns = plan.reconfiguration_ns;
     if (ocs_reconf != 10000) { ocs_plan_reconf_ns = timeAsNs(ocs_reconf); }
     // Backend-v2 always begins with no installed matching. The legacy plan
@@ -485,6 +501,8 @@ void HTSimProtoTcp::load_ocs_plan() {
     ocs_initial_active.assign(plan.planes, false);
     ocs_initial_request_time.assign(plan.planes, 0);
     ocs_initial_ready_time.assign(plan.planes, 0);
+    ocs_transition_request_time.assign(plan.planes, 0);
+    ocs_transition_reconfiguration_ns.assign(plan.planes, 0.0);
     std::string identity_error;
     if (!build_ocs_plan_identity_index(plan, ocs_identity, identity_error)) {
         ocs_plan_fatal("identity_index_failed:" + identity_error);
@@ -527,11 +545,39 @@ void HTSimProtoTcp::load_ocs_plan() {
     s_self = this;
     std::cout << "OCS plan loaded: planes " << plan.planes
               << " rounds " << plan.rounds
+              << " schema " << plan.version
+              << " execution_model " << plan.execution_model
               << " reconf_ns " << ocs_plan_reconf_ns
               << " initial_state cold"
               << " plan_initial_reconfiguration_ignored "
               << (plan.initial_reconfiguration ? 1 : 0)
               << " scheduled_bytes " << ocs_plan_scheduled << std::endl;
+    std::cout << "OCS_PLAN_EXECUTION_MODE"
+              << " schema=" << plan.version
+              << " mode=" << plan.execution_model
+              << " plane_local_progress="
+              << (ocs_independent_plane_mode ? 1 : 0)
+              << std::endl;
+}
+
+void HTSimProtoTcp::ocs_print_plane_activation(
+        int plane, int configuration, bool cold_start,
+        simtime_picosec request_time, simtime_picosec activation_time,
+        double reconfiguration_ns) {
+    std::ostringstream record;
+    record << std::setprecision(15)
+           << "OCS_PLANE_CONFIG_ACTIVATE"
+           << " schema=" << ocs_plan_version
+           << " mode=" << ocs_plan_execution_model
+           << " plane=" << plane
+           << " configuration=" << configuration
+           << " cold_start=" << (cold_start ? 1 : 0)
+           << " request_ns=" << timeAsNs(request_time)
+           << " activation_ns=" << timeAsNs(activation_time)
+           << " reconfiguration_ns=" << reconfiguration_ns
+           << '\n';
+    std::cout << record.str();
+    std::cout.flush();
 }
 
 static void ocs_advance_cb(void* arg);   // defined below
@@ -558,6 +604,7 @@ void HTSimProtoTcp::ocs_activate_initial_configuration(int plane) {
     ocs_dark[plane] = false;
     ocs_initial_active[plane] = true;
     ++ocs_initial_configuration_activations;
+    ocs_cfgs[plane][0].activation = eventlist.now();
     ocs_cfg_times[std::make_pair(plane, 0)].first = timeAsNs(eventlist.now());
     std::ostringstream record;
     record << "OCS_INITIAL_CONFIG_ACTIVATE"
@@ -570,8 +617,12 @@ void HTSimProtoTcp::ocs_activate_initial_configuration(int plane) {
            << '\n';
     std::cout << record.str();
     std::cout.flush();
+    ocs_print_plane_activation(
+        plane, 0, true, ocs_initial_request_time[plane], eventlist.now(),
+        ocs_plan_reconf_ns);
     ocs_retry_cold_waiters();
     ocs_retry_plan_round_waiters();
+    ocs_retry_plan_configuration_waiters();
 }
 
 static void ocs_initial_activate_cb(void* arg) {
@@ -702,6 +753,9 @@ void HTSimProtoTcp::wait_for_plan_round(
         EventHandler msg_handler,
         void* fun_arg) {
     if (!ocs_plan_mode) ocs_plan_fatal("plan_round_wait_without_plan");
+    if (ocs_independent_plane_mode) {
+        ocs_plan_fatal("global_round_wait_in_independent_plane_mode");
+    }
     if (round < 0) ocs_plan_fatal("negative_plan_round_wait");
     ++ocs_plan_round_wait_requests;
     if (ocs_plan_round_active(round)) {
@@ -734,6 +788,75 @@ void HTSimProtoTcp::ocs_retry_plan_round_waiters() {
                   << " target_round=" << waiter.round
                   << " tick=" << timeAsNs(eventlist.now()) << std::endl;
         ++ocs_plan_round_wait_releases;
+        HTSimSession::instance().schedule_astra_event(
+            0.0, waiter.msg_handler, waiter.fun_arg);
+    }
+}
+
+bool HTSimProtoTcp::ocs_plan_configuration_active(
+        int plane, int configuration) {
+    if (plane < 0 || plane >= static_cast<int>(ocs_cfgs.size()) ||
+        configuration < 0 ||
+        configuration >= static_cast<int>(ocs_cfgs[plane].size())) {
+        ocs_plan_fatal("plan_configuration_wait_out_of_range");
+    }
+    if (ocs_cur[plane] > configuration) {
+        ocs_plan_fatal("plan_configuration_activation_became_stale");
+    }
+    return ocs_cur[plane] == configuration && !ocs_dark[plane];
+}
+
+void HTSimProtoTcp::wait_for_plan_configuration(
+        int plane,
+        int configuration,
+        EventHandler msg_handler,
+        void* fun_arg) {
+    if (!ocs_plan_mode) {
+        ocs_plan_fatal("plan_configuration_wait_without_plan");
+    }
+    if (!ocs_independent_plane_mode) {
+        ocs_plan_fatal("plane_configuration_wait_in_global_round_mode");
+    }
+    ++ocs_plan_configuration_wait_requests;
+    if (ocs_plan_configuration_active(plane, configuration)) {
+        ++ocs_plan_configuration_wait_releases;
+        HTSimSession::instance().schedule_astra_event(
+            0.0, msg_handler, fun_arg);
+        return;
+    }
+    for (const auto& waiter : ocs_plan_configuration_waiters) {
+        if (waiter.plane == plane &&
+            waiter.configuration == configuration) {
+            ocs_plan_fatal("duplicate_plan_configuration_waiter");
+        }
+    }
+    ocs_plan_configuration_waiters.push_back(
+        {plane, configuration, msg_handler, fun_arg});
+    std::cout << "PLAN_PLANE_CONFIG_WAIT"
+              << " plane=" << plane
+              << " configuration=" << configuration
+              << " tick=" << timeAsNs(eventlist.now()) << std::endl;
+    if (configuration == 0 && !ocs_initial_active[plane]) {
+        ocs_request_initial_configuration(plane, "plane_barrier");
+    }
+}
+
+void HTSimProtoTcp::ocs_retry_plan_configuration_waiters() {
+    const size_t pending = ocs_plan_configuration_waiters.size();
+    for (size_t index = 0; index < pending; ++index) {
+        const OcsPlanConfigurationWaiter waiter =
+            ocs_plan_configuration_waiters.front();
+        ocs_plan_configuration_waiters.pop_front();
+        if (!ocs_plan_configuration_active(
+                waiter.plane, waiter.configuration)) {
+            ocs_plan_configuration_waiters.push_back(waiter);
+            continue;
+        }
+        std::cout << "PLAN_PLANE_CONFIG_READY"
+                  << " plane=" << waiter.plane
+                  << " configuration=" << waiter.configuration
+                  << " tick=" << timeAsNs(eventlist.now()) << std::endl;
+        ++ocs_plan_configuration_wait_releases;
         HTSimSession::instance().schedule_astra_event(
             0.0, waiter.msg_handler, waiter.fun_arg);
     }
@@ -836,9 +959,16 @@ void HTSimProtoTcp::ocs_install_next_uncharged(int plane, bool /*counted*/) {
     ocs_dark[plane] = false;
     ocs_cur[plane]++;
     ocs_plan_rounds_done++;
+    OcsCfg& activated = ocs_cfgs[plane][ocs_cur[plane]];
+    activated.activation = eventlist.now();
     ocs_cfg_times[std::make_pair(plane, ocs_cur[plane])].first =
         timeAsNs(eventlist.now());
+    ocs_print_plane_activation(
+        plane, ocs_cur[plane], false,
+        ocs_transition_request_time[plane], eventlist.now(),
+        ocs_transition_reconfiguration_ns[plane]);
     ocs_retry_plan_round_waiters();
+    ocs_retry_plan_configuration_waiters();
 }
 
 static void ocs_advance_cb(void* arg) {
@@ -881,6 +1011,29 @@ void HTSimProtoTcp::ocs_advance_after_drain(int plane) {
     bool changed = ocs_cfgs[plane][cfg + 1].force_reconf ||
                    matching_changed(ocs_cfgs[plane][cfg], ocs_cfgs[plane][cfg + 1]);
     if (changed) ocs_reconfigs++;
+    ocs_transition_request_time[plane] = eventlist.now();
+    ocs_transition_reconfiguration_ns[plane] =
+        changed ? ocs_plan_reconf_ns : 0.0;
+    {
+        std::ostringstream record;
+        record << std::setprecision(15)
+               << "OCS_PLANE_TRANSITION"
+               << " schema=" << ocs_plan_version
+               << " mode=" << ocs_plan_execution_model
+               << " plane=" << plane
+               << " from_configuration=" << cfg
+               << " to_configuration=" << (cfg + 1)
+               << " request_ns=" << timeAsNs(eventlist.now())
+               << " ready_ns="
+               << timeAsNs(eventlist.now()) +
+                      ocs_transition_reconfiguration_ns[plane]
+               << " matching_changed=" << (changed ? 1 : 0)
+               << " reconfiguration_ns="
+               << ocs_transition_reconfiguration_ns[plane]
+               << '\n';
+        std::cout << record.str();
+        std::cout.flush();
+    }
     if (changed && ocs_plan_reconf_ns > 0) {
         ocs_dark[plane] = true;
         std::pair<HTSimProtoTcp*, int>* arg = new std::pair<HTSimProtoTcp*, int>(this, plane);
@@ -908,16 +1061,26 @@ void HTSimProtoTcp::ocs_print_config_drain(
     std::ostringstream record;
     record << std::setprecision(15);
     record << "OCS_CONFIG_DRAIN"
+           << " schema=" << ocs_plan_version
+           << " mode=" << ocs_plan_execution_model
            << " plane=" << plane
            << " config=" << configuration
            << " round=" << current.round
            << " expected_stripes=" << current.circuits.size()
            << " started_stripes=" << current.started
            << " completed_stripes=" << current.completed
+           << " activation_ns=" << timeAsNs(current.activation)
+           << " first_start_ns=" << timeAsNs(current.first_start)
            << " last_start_ns=" << timeAsNs(current.last_start)
            << " first_complete_ns=" << timeAsNs(current.first_complete)
            << " last_complete_ns=" << timeAsNs(current.last_complete)
            << " advance_ns=" << timeAsNs(advance_time)
+           << " activation_wait_ns="
+           << timeAsNs(current.first_start - current.activation)
+           << " service_ns="
+           << timeAsNs(current.last_complete - current.first_start)
+           << " drain_wait_ns="
+           << timeAsNs(advance_time - current.last_complete)
            << " reconfiguration_ns="
            << (changed ? ocs_plan_reconf_ns : 0.0)
            << " status=PASS\n";
@@ -1224,6 +1387,10 @@ void HTSimProtoTcp::ocs_note_started(int flow_id, uint64_t bytes,
     }
     OcsCfg& oc = ocs_cfgs[pl][cfgi];
     oc.started++;
+    if (!oc.has_start) {
+        oc.first_start = eventlist.now();
+        oc.has_start = true;
+    }
     oc.last_start = eventlist.now();
     if (oc.started > (int)oc.circuits.size())
         ocs_plan_fatal("configuration_started_too_many_stripes");
@@ -1887,6 +2054,8 @@ void HTSimProtoTcp::finish() {
             ocs_estimated_drain_events == 0 &&
             ocs_premature_advances == 0 &&
             ocs_plan_round_wait_requests == ocs_plan_round_wait_releases &&
+            ocs_plan_configuration_wait_requests ==
+                ocs_plan_configuration_wait_releases &&
             ocs_runtime_flows_registered == ocs_expected_flows.size() &&
             ocs_runtime_flows_started == ocs_expected_flows.size() &&
             ocs_runtime_flows_completed == ocs_expected_flows.size() &&
@@ -1900,7 +2069,8 @@ void HTSimProtoTcp::finish() {
             ocs_cold_waiters.empty() &&
             ocs_cold_queued_flow_ids.empty() &&
             ocs_cold_queued_flow_uids.empty() &&
-            ocs_plan_round_waiters.empty();
+            ocs_plan_round_waiters.empty() &&
+            ocs_plan_configuration_waiters.empty();
         if (!complete) ocs_plan_fatal("unconsumed_or_incomplete_plan_entries");
         std::cout << "OCS_INITIAL_AUDIT"
                   << " mode=planned"

@@ -19,6 +19,245 @@ static bool is_optical_route(const std::string& route) {
     return true;
 }
 
+static bool load_independent_plane_v7(const nlohmann::json& p,
+                                      OcsPlanData& out,
+                                      std::string& error) {
+    try {
+        out.execution_model = p.value("execution_model", "");
+        if (out.execution_model != "independent_planes") {
+            error = "plan-v7 requires execution_model=independent_planes";
+            return false;
+        }
+        if (p.contains("rounds")) {
+            error = "plan-v7 cannot contain global rounds";
+            return false;
+        }
+        out.endpoints = p.at("endpoints").get<int>();
+        out.planes = p.at("planes").get<int>();
+        out.reconfiguration_ns = p.at("reconfiguration_ns").get<double>();
+        if (out.endpoints < 2 || out.planes < 1 ||
+            out.reconfiguration_ns < 0) {
+            error = "invalid plan-v7 topology or reconfiguration latency";
+            return false;
+        }
+        out.initial_reconfiguration =
+            p.value("initial_reconfiguration", false);
+
+        std::map<std::string, OcsPlanData::Circuit> circuits_by_uid;
+        std::map<std::string, std::pair<int, int>> circuit_locations;
+        std::map<std::string, int> circuit_streams;
+        std::set<int> declared_planes;
+        for (const auto& sequence : p.at("plane_sequences")) {
+            const int plane = sequence.at("plane").get<int>();
+            if (plane < 0 || plane >= out.planes ||
+                !declared_planes.insert(plane).second) {
+                error = "plan-v7 plane sequence is invalid or duplicated";
+                return false;
+            }
+            int expected_configuration = 0;
+            for (const auto& cfg : sequence.at("configurations")) {
+                if (cfg.contains("round") || cfg.contains("target_round")) {
+                    error = "plan-v7 configuration contains a global round";
+                    return false;
+                }
+                if (cfg.at("sequence").get<int>() != expected_configuration) {
+                    error = "plan-v7 plane configurations are not contiguous";
+                    return false;
+                }
+                if (cfg.value("synchronize", false)) {
+                    error = "plan-v7 cannot request cross-plane synchronization";
+                    return false;
+                }
+                OcsPlanData::Cfg oc;
+                oc.plane = plane;
+                oc.stream = cfg.at("stream").get<int>();
+                oc.round = -1;
+                oc.force_reconf =
+                    cfg.value("force_reconfiguration", false);
+                oc.synchronize = false;
+                oc.phase = phase_of(cfg);
+
+                std::set<int> matching_sources, matching_destinations;
+                std::set<std::pair<int, int>> matching_edges;
+                for (const auto& item : cfg.at("matching")) {
+                    if (!item.is_array() || item.size() != 2) {
+                        error = "plan-v7 matching entry is malformed";
+                        return false;
+                    }
+                    const int source = item[0].get<int>();
+                    const int destination = item[1].get<int>();
+                    if (source < 0 || destination < 0 ||
+                        source >= out.endpoints ||
+                        destination >= out.endpoints ||
+                        source == destination ||
+                        !matching_sources.insert(source).second ||
+                        !matching_destinations.insert(destination).second ||
+                        !matching_edges.insert({source, destination}).second) {
+                        error = "plan-v7 matching is not a valid directed matching";
+                        return false;
+                    }
+                    oc.matching.push_back({source, destination});
+                }
+                if (oc.matching.empty()) {
+                    error = "plan-v7 configuration has an empty matching";
+                    return false;
+                }
+
+                for (const auto& ci : cfg.at("circuits")) {
+                    OcsPlanData::Circuit circuit;
+                    circuit.src = ci.at("source").get<int>();
+                    circuit.dst = ci.at("destination").get<int>();
+                    circuit.bytes = ci.at("bytes").get<uint64_t>();
+                    circuit.flow_uid = ci.at("flow_uid").get<std::string>();
+                    circuit.stripe_uid = ci.at("stripe_uid").get<std::string>();
+                    if (circuit.src < 0 || circuit.dst < 0 ||
+                        circuit.src >= out.endpoints ||
+                        circuit.dst >= out.endpoints ||
+                        circuit.src == circuit.dst || circuit.bytes == 0 ||
+                        circuit.flow_uid.empty() || circuit.stripe_uid.empty()) {
+                        error = "plan-v7 circuit fields are invalid";
+                        return false;
+                    }
+                    if (!matching_edges.count({circuit.src, circuit.dst})) {
+                        error = "plan-v7 circuit is outside its installed matching";
+                        return false;
+                    }
+                    if (!circuits_by_uid.emplace(
+                            circuit.stripe_uid, circuit).second) {
+                        error = "duplicate plan-v7 stripe_uid " +
+                                circuit.stripe_uid;
+                        return false;
+                    }
+                    circuit_locations[circuit.stripe_uid] =
+                        {expected_configuration, plane};
+                    circuit_streams[circuit.stripe_uid] = oc.stream;
+                    oc.circuits.push_back(circuit);
+                    out.scheduled_bytes += circuit.bytes;
+                }
+                if (oc.circuits.empty()) {
+                    error = "plan-v7 configuration has no executable circuits";
+                    return false;
+                }
+                out.configurations.push_back(oc);
+                ++expected_configuration;
+            }
+        }
+        if (declared_planes.size() != static_cast<size_t>(out.planes)) {
+            error = "plan-v7 must declare every plane sequence";
+            return false;
+        }
+        out.rounds = 0;
+
+        std::set<std::string> flow_uids;
+        std::set<std::string> assigned_stripe_uids;
+        for (const auto& a : p.at("assignments")) {
+            const std::string route = a.at("route").get<std::string>();
+            if (route != "DIRECT" && !is_optical_route(route)) {
+                error = "plan-v7 assignment route is invalid";
+                return false;
+            }
+            const bool direct = route == "DIRECT";
+            if (a.value("not_before_ns", 0) != 0 ||
+                a.value("allow_direct_escape", false)) {
+                error = "plan-v7 uses unsupported timing or direct escape";
+                return false;
+            }
+            if (a.contains("round") || a.contains("target_round")) {
+                error = "plan-v7 assignment contains a global round";
+                return false;
+            }
+
+            OcsPlanData::Asn an;
+            an.flow_uid = a.at("flow_uid").get<std::string>();
+            if (an.flow_uid.empty() ||
+                !flow_uids.insert(an.flow_uid).second) {
+                error = "plan-v7 flow_uid is empty or duplicated";
+                return false;
+            }
+            an.src = a.at("source").get<int>();
+            an.dst = a.at("destination").get<int>();
+            an.bytes = a.at("logical_bytes").get<uint64_t>();
+            an.tag = a.at("tag").get<int>();
+            an.stream = a.at("stream").get<int>();
+            an.round = -1;
+            an.is_direct = direct;
+            an.phase = phase_of(a);
+            if (an.src < 0 || an.dst < 0 || an.src >= out.endpoints ||
+                an.dst >= out.endpoints || an.src == an.dst ||
+                an.bytes == 0 || an.tag < 0 || an.stream < 0) {
+                error = "plan-v7 assignment fields are invalid";
+                return false;
+            }
+
+            uint64_t stripe_bytes = 0;
+            if (!direct) {
+                if (!a.contains("stripes") || a.at("stripes").empty()) {
+                    error = "plan-v7 optical assignment has no stripes";
+                    return false;
+                }
+                for (const auto& s : a.at("stripes")) {
+                    OcsPlanData::Stripe stripe;
+                    stripe.stripe_uid = s.at("stripe_uid").get<std::string>();
+                    stripe.plane = s.at("plane").get<int>();
+                    stripe.configuration =
+                        s.at("configuration").get<int>();
+                    stripe.bytes = s.at("bytes").get<uint64_t>();
+                    if (stripe.stripe_uid.empty() || stripe.bytes == 0 ||
+                        stripe.plane < 0 || stripe.plane >= out.planes ||
+                        stripe.configuration < 0 ||
+                        !assigned_stripe_uids.insert(
+                            stripe.stripe_uid).second) {
+                        error = "plan-v7 assignment stripe is invalid or duplicated";
+                        return false;
+                    }
+                    if (route.size() > 3 &&
+                        std::stoi(route.substr(3)) != stripe.plane) {
+                        error = "plan-v7 assignment route names the wrong plane";
+                        return false;
+                    }
+                    stripe_bytes += stripe.bytes;
+                    const auto circuit = circuits_by_uid.find(stripe.stripe_uid);
+                    const auto location =
+                        circuit_locations.find(stripe.stripe_uid);
+                    const auto stream =
+                        circuit_streams.find(stripe.stripe_uid);
+                    if (circuit == circuits_by_uid.end() ||
+                        location == circuit_locations.end() ||
+                        stream == circuit_streams.end() ||
+                        circuit->second.flow_uid != an.flow_uid ||
+                        circuit->second.src != an.src ||
+                        circuit->second.dst != an.dst ||
+                        circuit->second.bytes != stripe.bytes ||
+                        location->second.first != stripe.configuration ||
+                        location->second.second != stripe.plane ||
+                        stream->second != an.stream) {
+                        error = "plan-v7 stripe/circuit identity mismatch";
+                        return false;
+                    }
+                    an.stripes.push_back(stripe);
+                }
+                if (stripe_bytes != an.bytes) {
+                    error = "plan-v7 stripes do not reconstruct logical_bytes";
+                    return false;
+                }
+            } else if (a.contains("stripes") &&
+                       !a.at("stripes").empty()) {
+                error = "plan-v7 direct assignment contains an optical slot";
+                return false;
+            }
+            out.assignments_full.push_back(an);
+        }
+        if (assigned_stripe_uids.size() != circuits_by_uid.size()) {
+            error = "plan-v7 contains an unreferenced circuit stripe";
+            return false;
+        }
+        return true;
+    } catch (const std::exception& exception) {
+        error = std::string("malformed plan-v7: ") + exception.what();
+        return false;
+    }
+}
+
 bool load_ocs_plan_file(const std::string& path, OcsPlanData& out,
                         std::string& error) {
     out = OcsPlanData();
@@ -30,9 +269,13 @@ bool load_ocs_plan_file(const std::string& path, OcsPlanData& out,
         error = "unsupported OCS plan format"; return false;
     }
     out.version = p.value("version", 0);
-    if (out.version != 6) {
-        error = "backend-v2 requires panel-ocs-plan version 6"; return false;
+    if (out.version == 7) {
+        return load_independent_plane_v7(p, out, error);
     }
+    if (out.version != 6) {
+        error = "backend supports panel-ocs-plan version 6 or 7"; return false;
+    }
+    out.execution_model = "global_round";
     try {
         out.endpoints = p.at("endpoints").get<int>();
         out.planes = p.at("planes").get<int>();
