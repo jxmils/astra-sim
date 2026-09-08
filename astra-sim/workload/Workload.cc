@@ -182,6 +182,8 @@ void release_global_plan_round_barrier(void* argument) {
     }
 }
 
+void try_release_plane_plan_configuration(int plane);
+
 void release_plane_plan_configuration_barrier(void* argument) {
     std::unique_ptr<PlanePlanBarrierRelease> release(
         static_cast<PlanePlanBarrierRelease*>(argument));
@@ -197,6 +199,7 @@ void release_plane_plan_configuration_barrier(void* argument) {
               << " configuration=" << release->key.configuration
               << " ranks=" << release->arrivals.size()
               << " tick=" << Sys::boostedTick() << std::endl;
+    try_release_plane_plan_configuration(release->key.plane);
     for (const auto& item : release->arrivals) {
         WorkloadLayerHandlerData* wlhd = new WorkloadLayerHandlerData;
         wlhd->sys_id = item.rank;
@@ -205,6 +208,34 @@ void release_plane_plan_configuration_barrier(void* argument) {
         item.workload->sys->register_event(
             item.workload, EventType::General, wlhd, 0);
     }
+}
+
+void try_release_plane_plan_configuration(int plane) {
+    const int configuration = next_plane_plan_configuration[plane];
+    const PlanePlanBarrierKey key{plane, configuration};
+    auto waiting = plane_plan_barrier_arrivals.find(key);
+    if (waiting == plane_plan_barrier_arrivals.end() ||
+        waiting->second.size() < Sys::all_sys.size()) {
+        return;
+    }
+    if (waiting->second.size() != Sys::all_sys.size()) {
+        plane_plan_barrier_fatal(
+            "too_many_arrivals", -1, plane, configuration);
+    }
+    std::set<int> ranks;
+    for (const auto& item : waiting->second) ranks.insert(item.rank);
+    if (ranks.size() != Sys::all_sys.size()) {
+        plane_plan_barrier_fatal(
+            "rank_set_mismatch", -1, plane, configuration);
+    }
+
+    auto* release = new PlanePlanBarrierRelease{key, waiting->second};
+    Workload* requester = waiting->second.front().workload;
+    plane_plan_barrier_arrivals.erase(waiting);
+    requester->sys->comm_NI->sim_wait_for_plan_configuration(
+        plane, configuration,
+        &release_plane_plan_configuration_barrier,
+        release);
 }
 }  // namespace
 
@@ -690,9 +721,9 @@ void Workload::issue_plane_plan_configuration_barrier(
         plane_plan_barrier_fatal(
             "invalid_name", sys->id, plane, configuration);
     }
-    if (configuration != next_plane_plan_configuration[plane]) {
+    if (configuration < next_plane_plan_configuration[plane]) {
         plane_plan_barrier_fatal(
-            "configuration_not_active", sys->id, plane, configuration);
+            "stale_configuration", sys->id, plane, configuration);
     }
     if (node->comm_size() != 0) {
         plane_plan_barrier_fatal(
@@ -711,24 +742,7 @@ void Workload::issue_plane_plan_configuration_barrier(
             "duplicate_rank", sys->id, plane, configuration);
     }
     arrivals.push_back({this, node->id(), sys->id});
-    if (arrivals.size() < Sys::all_sys.size()) return;
-    if (arrivals.size() != Sys::all_sys.size()) {
-        plane_plan_barrier_fatal(
-            "too_many_arrivals", sys->id, plane, configuration);
-    }
-    std::set<int> ranks;
-    for (const auto& item : arrivals) ranks.insert(item.rank);
-    if (ranks.size() != Sys::all_sys.size()) {
-        plane_plan_barrier_fatal(
-            "rank_set_mismatch", sys->id, plane, configuration);
-    }
-
-    auto* release = new PlanePlanBarrierRelease{key, arrivals};
-    plane_plan_barrier_arrivals.erase(key);
-    sys->comm_NI->sim_wait_for_plan_configuration(
-        plane, configuration,
-        &release_plane_plan_configuration_barrier,
-        release);
+    try_release_plane_plan_configuration(plane);
 }
 
 void Workload::skip_invalid(shared_ptr<Chakra::ETFeederNode> node) {
