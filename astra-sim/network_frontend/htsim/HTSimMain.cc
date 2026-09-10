@@ -42,6 +42,7 @@ void print_backend_capabilities(const std::string& admission) {
         << " initial_ocs_state=cold"
         << " initial_ocs_reconfiguration=uniform"
         << " custom_link_latency=1"
+        << " custom_graph_ecmp=deterministic_equal_hop_pair_hash_v1"
         << " ocs_plane_latency=whole_path"
         << std::endl;
 }
