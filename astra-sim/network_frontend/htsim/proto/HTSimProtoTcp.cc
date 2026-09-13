@@ -214,6 +214,7 @@ HTSimProtoTcp::HTSimProtoTcp(const HTSim::tm_info* const tm, int argc, char** ar
 
         i++;
     }
+    ::htsim_quiet_flow_logging = panel_nolog;
     if (rng_seed == 0) {
         rng_seed = (unsigned)time(NULL);
     }

@@ -44,6 +44,7 @@ void print_backend_capabilities(const std::string& admission) {
         << " custom_link_latency=1"
         << " custom_graph_ecmp=deterministic_equal_hop_pair_hash_v1"
         << " custom_graph_routes=validated_shortest_path_overrides_v1"
+        << " flow_console_logging=nolog_respected_v1"
         << " ocs_plane_latency=whole_path"
         << std::endl;
 }

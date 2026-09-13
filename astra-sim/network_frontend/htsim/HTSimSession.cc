@@ -60,8 +60,10 @@ void HTSimSession::send_flow(FlowInfo flow,
                             void (*msg_handler)(void* fun_arg),
                             void* fun_arg) {
     // Create a MsgEvent instance and register callback function.
-    std::cout << "Send flow " << flow_id << " from " << flow.src << " to " << flow.dst
-              << " with size " << flow.size << "\n";
+    if (!::htsim_quiet_flow_logging) {
+        std::cout << "Send flow " << flow_id << " from " << flow.src << " to "
+                  << flow.dst << " with size " << flow.size << "\n";
+    }
     MsgEvent send_event = MsgEvent(flow.src, flow.dst, Dir::Send, flow.size, fun_arg, msg_handler);
     flow_id_to_tag[flow_id] = flow.tag;
     std::pair<MsgEventKey, int> send_event_key = std::make_pair(
