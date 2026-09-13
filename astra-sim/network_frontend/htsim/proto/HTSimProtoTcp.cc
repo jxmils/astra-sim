@@ -58,6 +58,9 @@ static void print_path(std::ofstream &paths,const Route* rt){
 
 // Impl constructor that loads config for session
 HTSimProtoTcp::HTSimProtoTcp(const HTSim::tm_info* const tm, int argc, char** argv) {
+    // Preserve final-ACK completion unless a source model explicitly advances
+    // receive dependencies when the last data packet arrives.
+    HTSimSession::conf.recv_flow_finish = false;
     eventlist.setEndtime(timeFromSec(60));
     c = std::make_unique<Clock>(timeFromSec(50 / 100.), eventlist);
     no_of_nodes = tm->nodes;
@@ -184,6 +187,8 @@ HTSimProtoTcp::HTSimProtoTcp(const HTSim::tm_info* const tm, int argc, char** ar
             i++;
         } else if (!strcmp(argv[i],"-nocc")){
             nocc = true;
+        } else if (!strcmp(argv[i],"-recvFlowFinish")){
+            HTSimSession::conf.recv_flow_finish = true;
         } else if (!strcmp(argv[i],"-q")){
             queuesize_pkts = atoi(argv[i+1]);
             std::cout << "queuesize_pkts " << queuesize_pkts << std::endl;
@@ -221,6 +226,10 @@ HTSimProtoTcp::HTSimProtoTcp(const HTSim::tm_info* const tm, int argc, char** ar
     std::cout << "Using rng seed " << rng_seed << " (pass -seed " << rng_seed
               << " to replay)" << std::endl;
     std::cout << "Congestion control: " << (nocc ? "OFF (-nocc)" : "on") << std::endl;
+    std::cout << "RECEIVER_COMPLETION mode="
+              << (HTSimSession::conf.recv_flow_finish
+                      ? "last_data_packet" : "sender_final_ack")
+              << std::endl;
     srand(rng_seed);
 
     std::cout << "Using subflow count " << subflow_count << std::endl;
