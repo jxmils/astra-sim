@@ -189,7 +189,8 @@ int main(int argc, char** argv) {
   "reconfiguration_ns": 1.0,
   "plane_sequences": [
     {"plane": 0, "configurations": [
-      {"sequence": 0, "stream": 10, "matching": [[0,1]], "circuits": [
+      {"sequence": 0, "stream": 10, "minimum_dwell_ns": 50.0,
+       "matching": [[0,1]], "circuits": [
         {"source":0,"destination":1,"bytes":800,"flow_uid":"P0A","stripe_uid":"P0A.0"}]},
       {"sequence": 1, "stream": 11, "matching": [[0,2]], "circuits": [
         {"source":0,"destination":2,"bytes":200,"flow_uid":"P0B","stripe_uid":"P0B.0"}]}
@@ -217,6 +218,8 @@ int main(int argc, char** argv) {
                  "plan-v7 execution identity is explicit");
     ok &= expect(loaded.rounds == 0 && loaded.configurations.size() == 4,
                  "plan-v7 has plane-local configurations without rounds");
+    ok &= expect(loaded.configurations[0].minimum_dwell_ns == 50.0,
+                 "plan-v7 preserves independent-plane minimum dwell");
     error.clear();
     ok &= expect(build_ocs_plan_identity_index(loaded, index, error),
                  "plan-v7 identity index builds: " + error);

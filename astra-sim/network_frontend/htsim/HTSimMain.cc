@@ -33,6 +33,7 @@ void print_backend_capabilities(const std::string& admission) {
         << " ocs_plan_schema=6"
         << " ocs_independent_plane_schema=7"
         << " ocs_periodic_unrolled_schema=8"
+        << " ocs_independent_plane_minimum_dwell=1"
         << " independent_plane_progress=1"
         << " independent_plane_barrier=plane_configuration_activation"
         << " exact_flow_identity=1"
@@ -47,6 +48,7 @@ void print_backend_capabilities(const std::string& admission) {
         << " custom_graph_routes=validated_shortest_path_overrides_v1"
         << " flow_console_logging=nolog_respected_v1"
         << " flow_file_logging=nolog_recording_disabled_v1"
+        << " preconnected_exact_bytes=1"
         << " ocs_plane_latency=whole_path"
         << std::endl;
 }

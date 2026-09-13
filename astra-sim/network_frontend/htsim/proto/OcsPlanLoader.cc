@@ -76,6 +76,11 @@ static bool load_independent_plane_v7(const nlohmann::json& p,
                     cfg.value("force_reconfiguration", false);
                 oc.synchronize = false;
                 oc.phase = phase_of(cfg);
+                oc.minimum_dwell_ns = cfg.value("minimum_dwell_ns", 0.0);
+                if (oc.minimum_dwell_ns < 0.0) {
+                    error = "plan-v7 minimum_dwell_ns is invalid";
+                    return false;
+                }
 
                 std::set<int> matching_sources, matching_destinations;
                 std::set<std::pair<int, int>> matching_edges;
