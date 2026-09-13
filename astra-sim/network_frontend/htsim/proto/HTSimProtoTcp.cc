@@ -865,6 +865,18 @@ void HTSimProtoTcp::wait_for_plan_round(
               << " target_round=" << round
               << " tick=" << timeAsNs(eventlist.now()) << std::endl;
     for (int plane = 0; plane < (int)ocs_cfgs.size(); ++plane) {
+        if (ocs_plan_version == 8 && !ocs_cfgs[plane].empty() &&
+            !ocs_initial_active[plane] && !ocs_initial_requested[plane] &&
+            ocs_cfgs[plane][0].round < round) {
+            // A periodic slot may intentionally contain no cells. In that
+            // case no flow can request the cold initial matching before the
+            // global barrier asks for the next slot. Start the declared
+            // predecessor here; its idle dwell and synchronized advancement
+            // remain identical to any other plan-v8 slot.
+            ocs_request_initial_configuration(
+                plane, "periodic_predecessor_round");
+            continue;
+        }
         if (!ocs_cfgs[plane].empty() && ocs_cfgs[plane][0].round == round &&
             !ocs_initial_active[plane]) {
             ocs_request_initial_configuration(plane, "round_barrier");
