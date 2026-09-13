@@ -239,6 +239,7 @@ class HTSimProtoTcp final : public HTSimSession::HTSimSessionImpl {
         void ocs_install_next(int plane);
         void ocs_install_next_uncharged(int plane, bool counted);
         void ocs_activate_initial_configuration(int plane);
+        void ocs_start_periodic_idle_slot(int plane);
         void ocs_request_initial_configuration(
             int plane, const char* request_source);
         void ocs_note_dynamic_initial_activation(

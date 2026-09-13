@@ -675,9 +675,47 @@ void HTSimProtoTcp::ocs_activate_initial_configuration(int plane) {
     ocs_print_plane_activation(
         plane, 0, true, ocs_initial_request_time[plane], eventlist.now(),
         ocs_plan_reconf_ns);
+    ocs_start_periodic_idle_slot(plane);
     ocs_retry_cold_waiters();
     ocs_retry_plan_round_waiters();
     ocs_retry_plan_configuration_waiters();
+}
+
+void HTSimProtoTcp::ocs_start_periodic_idle_slot(int plane) {
+    if (ocs_plan_version != 8 ||
+        ocs_plan_execution_model != "periodic_unrolled") {
+        return;
+    }
+    if (plane < 0 || plane >= (int)ocs_cfgs.size() ||
+        ocs_cur[plane] < 0 ||
+        ocs_cur[plane] >= (int)ocs_cfgs[plane].size()) {
+        ocs_plan_fatal("periodic_idle_slot_out_of_range");
+    }
+    OcsCfg& current = ocs_cfgs[plane][ocs_cur[plane]];
+    if (!current.circuits.empty()) return;
+    if (current.has_start || current.has_completion || current.drained ||
+        current.dwell_wait_scheduled) {
+        ocs_plan_fatal("periodic_idle_slot_state_invalid");
+    }
+
+    // An empty periodic configuration represents an intentionally idle
+    // transceiver slot, not an omitted plan flow. It consumes its declared
+    // dwell and participates in the same synchronized slot boundary as a
+    // configuration carrying cells.
+    current.first_start = eventlist.now();
+    current.last_start = eventlist.now();
+    current.has_start = true;
+    current.first_complete = eventlist.now();
+    current.last_complete = eventlist.now();
+    current.has_completion = true;
+    std::cout << "OCS_PERIODIC_IDLE_SLOT"
+              << " plane=" << plane
+              << " configuration=" << ocs_cur[plane]
+              << " round=" << current.round
+              << " activation_ns=" << timeAsNs(eventlist.now())
+              << " minimum_dwell_ns=" << current.minimum_dwell_ns
+              << std::endl;
+    ocs_drain_reached(plane);
 }
 
 static void ocs_initial_activate_cb(void* arg) {
@@ -1022,6 +1060,7 @@ void HTSimProtoTcp::ocs_install_next_uncharged(int plane, bool /*counted*/) {
         plane, ocs_cur[plane], false,
         ocs_transition_request_time[plane], eventlist.now(),
         ocs_transition_reconfiguration_ns[plane]);
+    ocs_start_periodic_idle_slot(plane);
     ocs_retry_plan_round_waiters();
     ocs_retry_plan_configuration_waiters();
 }

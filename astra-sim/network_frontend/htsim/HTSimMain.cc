@@ -33,6 +33,7 @@ void print_backend_capabilities(const std::string& admission) {
         << " ocs_plan_schema=6"
         << " ocs_independent_plane_schema=7"
         << " ocs_periodic_unrolled_schema=8"
+        << " ocs_periodic_idle_slots=1"
         << " ocs_independent_plane_minimum_dwell=1"
         << " independent_plane_progress=1"
         << " independent_plane_barrier=plane_configuration_activation"

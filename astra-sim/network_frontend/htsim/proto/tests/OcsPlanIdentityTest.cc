@@ -286,6 +286,39 @@ int main(int argc, char** argv) {
                  loaded.configurations[1].synchronize,
                  "plan-v8 preserves fixed dwell and synchronized planes");
 
+    const std::string plan_v8_idle = R"JSON({
+  "format": "panel-ocs-plan",
+  "version": 8,
+  "execution_model": "periodic_unrolled",
+  "endpoints": 4,
+  "planes": 2,
+  "reconfiguration_ns": 10.0,
+  "rounds": [
+    {"index": 0, "synchronize": true, "configurations": [
+      {"plane": 0, "stream": 0, "minimum_dwell_ns": 90.0,
+       "matching": [[0,1]], "circuits": [
+        {"source":0,"destination":1,"bytes":562,
+         "flow_uid":"V8-IDLE-A","stripe_uid":"V8-IDLE-A.0"}]},
+      {"plane": 1, "stream": 0, "minimum_dwell_ns": 90.0,
+       "matching": [], "circuits": []}
+    ]}
+  ],
+  "assignments": [
+    {"flow_uid":"V8-IDLE-A","source":0,"destination":1,
+     "tag":30,"stream":0,"logical_bytes":562,"round":0,"route":"OCS",
+     "stripes":[{"stripe_uid":"V8-IDLE-A.0","plane":0,"bytes":562}]}
+  ]
+})JSON";
+    const std::string v8_idle_path = write_fixture(plan_v8_idle, "-v8-idle");
+    error.clear();
+    ok &= expect(load_ocs_plan_file(v8_idle_path, loaded, error),
+                 "plan-v8 accepts an explicit idle plane-slot: " + error);
+    ok &= expect(loaded.configurations.size() == 2 &&
+                 loaded.configurations[1].matching.empty() &&
+                 loaded.configurations[1].circuits.empty() &&
+                 loaded.configurations[1].minimum_dwell_ns == 90.0,
+                 "plan-v8 preserves idle periodic slot dwell");
+
     std::string unsynchronized_v8 = plan_v8;
     const std::string synchronized = "\"synchronize\": true";
     unsynchronized_v8.replace(
