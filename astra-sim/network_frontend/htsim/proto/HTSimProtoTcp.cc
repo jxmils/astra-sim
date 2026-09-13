@@ -230,7 +230,9 @@ HTSimProtoTcp::HTSimProtoTcp(const HTSim::tm_info* const tm, int argc, char** ar
     std::cout <<  "Using algo="<<algo<< " epsilon=" << epsilon << std::endl;
     // prepare the loggers
 
-    std::cout << "Logging to " << filename.str() << std::endl;
+    std::cout << (panel_nolog ? "Packet-event logging disabled; metadata file "
+                              : "Logging to ")
+              << filename.str() << std::endl;
     logfile = std::make_unique<Logfile>(filename.str(), eventlist);
 
 #if PRINT_PATHS
@@ -244,11 +246,17 @@ HTSimProtoTcp::HTSimProtoTcp(const HTSim::tm_info* const tm, int argc, char** ar
 #endif
 
     logfile->setStartTime(timeFromSec(0));
-    sinkLogger = std::make_unique<TcpSinkLoggerSampling>(timeFromMs(1000), eventlist);
-    logfile->addLogger(*sinkLogger);
+    if (!panel_nolog) {
+        sinkLogger = std::make_unique<TcpSinkLoggerSampling>(timeFromMs(1000), eventlist);
+        logfile->addLogger(*sinkLogger);
+    }
 
     tcpRtxScanner = std::make_unique<TcpRtxTimerScanner>(timeFromMs(10), eventlist);
-    qlf = std::make_unique<QueueLoggerFactory>(logfile.get(), QueueLoggerFactory::LOGGER_SAMPLING, eventlist);
+    qlf = std::make_unique<QueueLoggerFactory>(
+        logfile.get(),
+        panel_nolog ? QueueLoggerFactory::LOGGER_EMPTY
+                    : QueueLoggerFactory::LOGGER_SAMPLING,
+        eventlist);
     qlf->set_sample_period(timeFromUs(1000.0));
 
 #if USE_FIRST_FIT
@@ -1818,10 +1826,14 @@ void HTSimProtoTcp::schedule_htsim_event(FlowInfo flow, int flow_id) {
             ? &HTSimProtoTcp::stripe_finish_recv : &HTSimSession::flow_finish_recv;
 
         tcpSrc->setName("mtcp_" + ntoa(src) + "_" + ntoa(inter) + "_" + ntoa(dst));
-        logfile->writeName(*tcpSrc);
+        if (!panel_nolog) {
+            logfile->writeName(*tcpSrc);
+        }
 
         tcpSnk->setName("mtcp_sink_" + ntoa(src) + "_" + ntoa(inter) + "_" + ntoa(dst));
-        logfile->writeName(*tcpSnk);
+        if (!panel_nolog) {
+            logfile->writeName(*tcpSnk);
+        }
 
         tcpRtxScanner->registerTcp(*tcpSrc);
         size_t choice = 0;
@@ -1898,7 +1910,9 @@ void HTSimProtoTcp::schedule_htsim_event(FlowInfo flow, int flow_id) {
 
         if (inter == 0) {
             mtcp->setName("multipath" + ntoa(src) + "_" + ntoa(dst));
-            logfile->writeName(*mtcp);
+            if (!panel_nolog) {
+                logfile->writeName(*mtcp);
+            }
         }
 
         {
@@ -1920,7 +1934,9 @@ void HTSimProtoTcp::schedule_htsim_event(FlowInfo flow, int flow_id) {
         if (ff&&!inter)
             ff->add_flow(src,dst,tcpSrc);
 
-        sinkLogger->monitorMultipathSink(tcpSnk);
+        if (sinkLogger) {
+            sinkLogger->monitorMultipathSink(tcpSnk);
+        }
     }
     // panel candidate cleanup: candidate Route objects were copied into
     // routeout; free the originals and the vector.
@@ -1934,13 +1950,15 @@ void HTSimProtoTcp::schedule_htsim_event(FlowInfo flow, int flow_id) {
 void HTSimProtoTcp::run(const HTSim::tm_info* const tm) {
     Logged::dump_idmap();
     // Record the setup
-    int pktsize = Packet::data_packet_size();
-    logfile->write("# pktsize=" + ntoa(pktsize) + " bytes");
-    logfile->write("# subflows=" + ntoa(subflow_count));
-    logfile->write("# hostnicrate = " + ntoa(linkspeed/1000000) + " Mbps");
-    logfile->write("# corelinkrate = " + ntoa(HOST_NIC*CORE_TO_HOST) + " pkt/sec");
-    double rtt = timeAsSec(timeFromUs(RTT));
-    logfile->write("# rtt =" + ntoa(rtt));
+    if (!panel_nolog) {
+        int pktsize = Packet::data_packet_size();
+        logfile->write("# pktsize=" + ntoa(pktsize) + " bytes");
+        logfile->write("# subflows=" + ntoa(subflow_count));
+        logfile->write("# hostnicrate = " + ntoa(linkspeed/1000000) + " Mbps");
+        logfile->write("# corelinkrate = " + ntoa(HOST_NIC*CORE_TO_HOST) + " pkt/sec");
+        double rtt = timeAsSec(timeFromUs(RTT));
+        logfile->write("# rtt =" + ntoa(rtt));
+    }
 
     // GO!
     while (eventlist.doNextEvent()) {
