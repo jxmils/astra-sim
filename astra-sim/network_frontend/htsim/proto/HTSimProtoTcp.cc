@@ -196,6 +196,15 @@ HTSimProtoTcp::HTSimProtoTcp(const HTSim::tm_info* const tm, int argc, char** ar
             }
             message_packet_bytes = (uint16_t)packet_bytes;
             i++;
+        } else if (!strcmp(argv[i],"-messageStartNs")){
+            double delay_ns = atof(argv[i+1]);
+            if (delay_ns < 0.0) {
+                std::cerr << "-messageStartNs must be nonnegative"
+                          << std::endl;
+                exit(1);
+            }
+            message_start_ns = delay_ns;
+            i++;
         } else if (!strcmp(argv[i],"-nocc")){
             nocc = true;
         } else if (!strcmp(argv[i],"-recvFlowFinish")){
@@ -244,9 +253,15 @@ HTSimProtoTcp::HTSimProtoTcp(const HTSim::tm_info* const tm, int argc, char** ar
     std::cout << "MESSAGE_TRANSPORT mode="
               << (preconnected_messages
                       ? "preconnected_exact_bytes" : "tcp_connection")
-              << " packet_bytes=" << message_packet_bytes << std::endl;
+              << " packet_bytes=" << message_packet_bytes
+              << " start_ns=" << message_start_ns << std::endl;
     if (preconnected_messages && !nocc) {
         std::cerr << "-preconnectedMessages requires -nocc" << std::endl;
+        exit(1);
+    }
+    if (message_start_ns > 0.0 && !preconnected_messages) {
+        std::cerr << "-messageStartNs requires -preconnectedMessages"
+                  << std::endl;
         exit(1);
     }
     srand(rng_seed);
@@ -1954,7 +1969,10 @@ void HTSimProtoTcp::schedule_htsim_event(FlowInfo flow, int flow_id) {
         {
             simtime_picosec fd = 0;
             if (panel_top) { fd = panel_flow_delay; }
-            tcpSrc->connect(*routeout, *routein, *tcpSnk, start + fd + timeFromMs(extrastarttime));
+            tcpSrc->connect(
+                *routeout, *routein, *tcpSnk,
+                start + fd + timeFromMs(extrastarttime)
+                    + timeFromNs(message_start_ns));
         }
 
         if (flow_id) {

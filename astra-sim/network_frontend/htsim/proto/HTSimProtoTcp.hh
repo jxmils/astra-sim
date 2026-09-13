@@ -90,6 +90,9 @@ class HTSimProtoTcp final : public HTSimSession::HTSimSessionImpl {
         // than this MTU. Historical TCP handshake/padding remains the default.
         bool preconnected_messages = false;
         uint16_t message_packet_bytes = 8192;
+        // Optional source-model endpoint control cost before a message begins
+        // transport. It is disabled by default and does not alter legacy runs.
+        double message_start_ns = 0.0;
         // --- Dynamic OCS mode: planes are circuit switches with leases ---
         // A flow using plane p holds its (uplink src, downlink dst) circuit
         // until sender-side final-ACK completion. Compatible flows may share
