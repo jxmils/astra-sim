@@ -185,6 +185,17 @@ HTSimProtoTcp::HTSimProtoTcp(const HTSim::tm_info* const tm, int argc, char** ar
         } else if (!strcmp(argv[i],"-maxwin")){
             nocc_maxwin = (uint64_t)atoll(argv[i+1]);
             i++;
+        } else if (!strcmp(argv[i],"-preconnectedMessages")){
+            preconnected_messages = true;
+        } else if (!strcmp(argv[i],"-messagePacketBytes")){
+            long packet_bytes = atol(argv[i+1]);
+            if (packet_bytes <= 0 || packet_bytes > 65535) {
+                std::cerr << "-messagePacketBytes must be in [1,65535]"
+                          << std::endl;
+                exit(1);
+            }
+            message_packet_bytes = (uint16_t)packet_bytes;
+            i++;
         } else if (!strcmp(argv[i],"-nocc")){
             nocc = true;
         } else if (!strcmp(argv[i],"-recvFlowFinish")){
@@ -230,6 +241,14 @@ HTSimProtoTcp::HTSimProtoTcp(const HTSim::tm_info* const tm, int argc, char** ar
               << (HTSimSession::conf.recv_flow_finish
                       ? "last_data_packet" : "sender_final_ack")
               << std::endl;
+    std::cout << "MESSAGE_TRANSPORT mode="
+              << (preconnected_messages
+                      ? "preconnected_exact_bytes" : "tcp_connection")
+              << " packet_bytes=" << message_packet_bytes << std::endl;
+    if (preconnected_messages && !nocc) {
+        std::cerr << "-preconnectedMessages requires -nocc" << std::endl;
+        exit(1);
+    }
     srand(rng_seed);
 
     std::cout << "Using subflow count " << subflow_count << std::endl;
@@ -1817,11 +1836,19 @@ void HTSimProtoTcp::schedule_htsim_event(FlowInfo flow, int flow_id) {
         tcpSrc->_debug_dstid = dst;
         tcpSrc->astrasim_flow_finish_send_cb = (flow_id >= 900000000)
             ? &HTSimProtoTcp::stripe_finish_send : &HTSimSession::flow_finish_send;
-        tcpSrc->set_flowsize(msg_size);
+        if (preconnected_messages) {
+            tcpSrc->configure_preconnected_message(
+                (uint64_t)msg_size, message_packet_bytes);
+        } else {
+            tcpSrc->set_flowsize(msg_size);
+        }
         if (nocc) {
             // Full window from the first RTT: no slow start, and with no drops
             // the AIMD path never executes. mss headroom covers rounding.
-            uint64_t win = (uint64_t)msg_size + 2 * Packet::data_packet_size();
+            uint64_t packet_bytes = preconnected_messages
+                ? std::min<uint64_t>((uint64_t)msg_size, message_packet_bytes)
+                : (uint64_t)Packet::data_packet_size();
+            uint64_t win = (uint64_t)msg_size + 2 * packet_bytes;
             if (nocc_maxwin > 0 && win > nocc_maxwin) {
                 win = nocc_maxwin;
             }

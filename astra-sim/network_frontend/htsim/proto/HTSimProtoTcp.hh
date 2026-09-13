@@ -85,6 +85,11 @@ class HTSimProtoTcp final : public HTSimSession::HTSimSessionImpl {
         // makes multi-GiB collectives simulable: uncapped, in-flight ~ S and
         // bisection buffers would need gigabytes.
         uint64_t nocc_maxwin = 0;
+        // Source-reproduction mode: each ASTRA message uses an already-open
+        // transport and injects exactly its logical bytes in packets no larger
+        // than this MTU. Historical TCP handshake/padding remains the default.
+        bool preconnected_messages = false;
+        uint16_t message_packet_bytes = 8192;
         // --- Dynamic OCS mode: planes are circuit switches with leases ---
         // A flow using plane p holds its (uplink src, downlink dst) circuit
         // until sender-side final-ACK completion. Compatible flows may share
