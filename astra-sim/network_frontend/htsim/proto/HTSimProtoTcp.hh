@@ -10,6 +10,7 @@
 #include <fstream>
 #include <set>
 #include <string>
+#include <tuple>
 
 #include "HTSimSessionImpl.hh"
 #include "OcsPlanLoader.hh"
@@ -160,6 +161,8 @@ class HTSimProtoTcp final : public HTSimSession::HTSimSessionImpl {
                         bool force_reconf = false;
                          int phase = 0;  // 1 fold, 2 unfold
                          bool synchronize = false;
+                        double minimum_dwell_ns = 0.0;
+                        bool dwell_wait_scheduled = false;
                         bool drained = false;
                         bool drain_reported = false; };
         std::vector<std::vector<OcsCfg>> ocs_cfgs;      // [plane][seq]
@@ -231,6 +234,7 @@ class HTSimProtoTcp final : public HTSimSession::HTSimSessionImpl {
         std::map<int, std::pair<int,int>> ocs_flow_cfg;  // flow_id -> (plane,cfg)
         uint64_t ocs_plan_scheduled = 0, ocs_plan_transmitted = 0;
         int ocs_plan_rounds_done = 0;
+        uint64_t ocs_periodic_dwell_waits = 0;
         void load_ocs_plan();
         void ocs_install_next(int plane);
         void ocs_install_next_uncharged(int plane, bool counted);

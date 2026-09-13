@@ -536,7 +536,8 @@ void HTSimProtoTcp::load_ocs_plan() {
     ocs_independent_plane_mode =
         plan.version == 7 && plan.execution_model == "independent_planes";
     if ((plan.version == 6 && plan.execution_model != "global_round") ||
-        (plan.version == 7 && !ocs_independent_plane_mode)) {
+        (plan.version == 7 && !ocs_independent_plane_mode) ||
+        (plan.version == 8 && plan.execution_model != "periodic_unrolled")) {
         ocs_plan_fatal("execution_model_mismatch");
     }
     ocs_plan_reconf_ns = plan.reconfiguration_ns;
@@ -571,6 +572,7 @@ void HTSimProtoTcp::load_ocs_plan() {
         oc.force_reconf = src.force_reconf;
         oc.phase = src.phase;
         oc.synchronize = src.synchronize;
+        oc.minimum_dwell_ns = src.minimum_dwell_ns;
         int pl = src.plane;
         for (size_t q = 0; q < src.circuits.size(); q++) {
             int s = src.circuits[q].src;
@@ -633,6 +635,7 @@ void HTSimProtoTcp::ocs_print_plane_activation(
 }
 
 static void ocs_advance_cb(void* arg);   // defined below
+static void ocs_periodic_dwell_cb(void* arg);  // defined below
 static void ocs_initial_activate_cb(void* arg);  // defined below
 struct OcsDynamicInitialActivation {
     HTSimProtoTcp* impl;
@@ -1151,6 +1154,30 @@ void HTSimProtoTcp::ocs_drain_reached(int plane) {
         ocs_premature_advances++;
         ocs_plan_fatal("configuration_drained_before_transport_completion");
     }
+    const simtime_picosec minimum_end = current.activation +
+        timeFromNs(current.minimum_dwell_ns);
+    if (eventlist.now() < minimum_end) {
+        if (current.dwell_wait_scheduled) {
+            ocs_plan_fatal("periodic_dwell_wait_scheduled_more_than_once");
+        }
+        current.dwell_wait_scheduled = true;
+        ++ocs_periodic_dwell_waits;
+        std::tuple<HTSimProtoTcp*, int, int>* arg =
+            new std::tuple<HTSimProtoTcp*, int, int>(this, plane, cfg);
+        HTSimSession::instance().schedule_astra_event(
+            timeAsNs(minimum_end - eventlist.now()),
+            &ocs_periodic_dwell_cb, arg);
+        std::cout << "OCS_PERIODIC_SLOT_WAIT"
+                  << " plane=" << plane
+                  << " configuration=" << cfg
+                  << " activation_ns=" << timeAsNs(current.activation)
+                  << " transport_complete_ns=" << timeAsNs(eventlist.now())
+                  << " minimum_dwell_ns=" << current.minimum_dwell_ns
+                  << " release_ns=" << timeAsNs(minimum_end)
+                  << std::endl;
+        return;
+    }
+    current.dwell_wait_scheduled = false;
     ocs_cfg_times[std::make_pair(plane, cfg)].second = timeAsNs(eventlist.now());
     current.drained = true;
     ocs_drained_configurations++;
@@ -1182,6 +1209,23 @@ void HTSimProtoTcp::ocs_drain_reached(int plane) {
     }
     for (size_t index = 0; index < participants.size(); index++)
         ocs_advance_after_drain(participants[index]);
+}
+
+static void ocs_periodic_dwell_cb(void* arg) {
+    std::tuple<HTSimProtoTcp*, int, int>* state =
+        (std::tuple<HTSimProtoTcp*, int, int>*)arg;
+    HTSimProtoTcp* impl = std::get<0>(*state);
+    const int plane = std::get<1>(*state);
+    const int configuration = std::get<2>(*state);
+    delete state;
+    if (plane < 0 || plane >= (int)impl->ocs_cfgs.size() ||
+        configuration != impl->ocs_cur[plane] ||
+        configuration < 0 ||
+        configuration >= (int)impl->ocs_cfgs[plane].size() ||
+        !impl->ocs_cfgs[plane][configuration].dwell_wait_scheduled) {
+        impl->ocs_plan_fatal("periodic_dwell_callback_state_mismatch");
+    }
+    impl->ocs_drain_reached(plane);
 }
 
 void HTSimProtoTcp::flow_done(int flow_id) {
@@ -2046,7 +2090,9 @@ void HTSimProtoTcp::finish() {
                   << " rounds_advanced=" << ocs_plan_rounds_done
                   << " scheduled_bytes=" << ocs_plan_scheduled
                   << " transmitted_bytes=" << ocs_plan_transmitted
-                  << " reconf_ns=" << ocs_plan_reconf_ns << std::endl;
+                  << " reconf_ns=" << ocs_plan_reconf_ns
+                  << " periodic_dwell_waits=" << ocs_periodic_dwell_waits
+                  << std::endl;
     }
     if (ocs_mode) {
         std::cout << "OCS_STATS reconfigs=" << ocs_reconfigs

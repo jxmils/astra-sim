@@ -249,6 +249,54 @@ int main(int argc, char** argv) {
                      std::string::npos,
                  "plan-v7 rejects an implicit or wrong execution model");
 
+    const std::string plan_v8 = R"JSON({
+  "format": "panel-ocs-plan",
+  "version": 8,
+  "execution_model": "periodic_unrolled",
+  "endpoints": 4,
+  "planes": 2,
+  "reconfiguration_ns": 10.0,
+  "rounds": [
+    {"index": 0, "synchronize": true, "configurations": [
+      {"plane": 0, "stream": 0, "minimum_dwell_ns": 50.0,
+       "matching": [[0,1]], "circuits": [
+        {"source":0,"destination":1,"bytes":100,"flow_uid":"V8A","stripe_uid":"V8A.0"}]},
+      {"plane": 1, "stream": 1, "minimum_dwell_ns": 50.0,
+       "matching": [[2,3]], "circuits": [
+        {"source":2,"destination":3,"bytes":100,"flow_uid":"V8B","stripe_uid":"V8B.1"}]}
+    ]}
+  ],
+  "assignments": [
+    {"flow_uid":"V8A","source":0,"destination":1,"tag":20,"stream":0,"logical_bytes":100,"round":0,"route":"OCS","stripes":[{"stripe_uid":"V8A.0","plane":0,"bytes":100}]},
+    {"flow_uid":"V8B","source":2,"destination":3,"tag":21,"stream":1,"logical_bytes":100,"round":0,"route":"OCS","stripes":[{"stripe_uid":"V8B.1","plane":1,"bytes":100}]}
+  ]
+})JSON";
+    const std::string v8_path = write_fixture(plan_v8, "-v8");
+    error.clear();
+    ok &= expect(load_ocs_plan_file(v8_path, loaded, error),
+                 "plan-v8 loads: " + error);
+    ok &= expect(loaded.version == 8 &&
+                 loaded.execution_model == "periodic_unrolled",
+                 "plan-v8 execution identity is explicit");
+    ok &= expect(loaded.configurations.size() == 2 &&
+                 loaded.configurations[0].minimum_dwell_ns == 50.0 &&
+                 loaded.configurations[1].synchronize,
+                 "plan-v8 preserves fixed dwell and synchronized planes");
+
+    std::string unsynchronized_v8 = plan_v8;
+    const std::string synchronized = "\"synchronize\": true";
+    unsynchronized_v8.replace(
+        unsynchronized_v8.find(synchronized), synchronized.size(),
+        "\"synchronize\": false");
+    const std::string unsynchronized_v8_path =
+        write_fixture(unsynchronized_v8, "-v8-unsynchronized");
+    error.clear();
+    ok &= expect(!load_ocs_plan_file(
+                     unsynchronized_v8_path, loaded, error) &&
+                 error.find("must synchronize every plane") !=
+                     std::string::npos,
+                 "plan-v8 rejects an unsynchronized periodic slot");
+
     std::string v5 = plan;
     const std::string needle = "\"version\": 6";
     v5.replace(v5.find(needle), needle.size(), "\"version\": 5");
@@ -263,6 +311,8 @@ int main(int argc, char** argv) {
     std::remove(v7_path.c_str());
     std::remove(rounded_v7_path.c_str());
     std::remove(wrong_v7_path.c_str());
+    std::remove(v8_path.c_str());
+    std::remove(unsynchronized_v8_path.c_str());
     if (ok) std::cout << "PASS: exact plan-v6/v7 identity" << std::endl;
     return ok ? 0 : 1;
 }

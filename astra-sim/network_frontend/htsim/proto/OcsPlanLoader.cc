@@ -272,10 +272,15 @@ bool load_ocs_plan_file(const std::string& path, OcsPlanData& out,
     if (out.version == 7) {
         return load_independent_plane_v7(p, out, error);
     }
-    if (out.version != 6) {
-        error = "backend supports panel-ocs-plan version 6 or 7"; return false;
+    if (out.version != 6 && out.version != 8) {
+        error = "backend supports panel-ocs-plan version 6, 7, or 8"; return false;
     }
-    out.execution_model = "global_round";
+    out.execution_model = out.version == 8
+        ? p.value("execution_model", "") : "global_round";
+    if (out.version == 8 && out.execution_model != "periodic_unrolled") {
+        error = "plan-v8 requires execution_model=periodic_unrolled";
+        return false;
+    }
     try {
         out.endpoints = p.at("endpoints").get<int>();
         out.planes = p.at("planes").get<int>();
@@ -294,6 +299,10 @@ bool load_ocs_plan_file(const std::string& path, OcsPlanData& out,
                 error = "plan-v6 round indices are not contiguous"; return false;
             }
             const bool synchronize = round.value("synchronize", false);
+            if (out.version == 8 && !synchronize) {
+                error = "plan-v8 periodic slots must synchronize every plane";
+                return false;
+            }
             std::set<int> round_planes;
             for (const auto& cfg : round.at("configurations")) {
                 OcsPlanData::Cfg oc;
@@ -308,6 +317,12 @@ bool load_ocs_plan_file(const std::string& path, OcsPlanData& out,
                 oc.force_reconf = cfg.value("force_reconfiguration", false);
                 oc.synchronize = synchronize;
                 oc.phase = phase_of(cfg);
+                oc.minimum_dwell_ns = cfg.value("minimum_dwell_ns", 0.0);
+                if (oc.minimum_dwell_ns < 0.0 ||
+                    (out.version == 6 && oc.minimum_dwell_ns != 0.0)) {
+                    error = "minimum_dwell_ns is invalid for this plan schema";
+                    return false;
+                }
 
                 std::set<int> matching_sources, matching_destinations;
                 std::set<std::pair<int, int>> matching_edges;
@@ -356,6 +371,11 @@ bool load_ocs_plan_file(const std::string& path, OcsPlanData& out,
                     out.scheduled_bytes += circuit.bytes;
                 }
                 out.configurations.push_back(oc);
+            }
+            if (out.version == 8 &&
+                round_planes.size() != static_cast<size_t>(out.planes)) {
+                error = "plan-v8 periodic slot must configure every plane";
+                return false;
             }
             ridx++;
         }

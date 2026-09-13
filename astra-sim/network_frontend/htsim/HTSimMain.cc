@@ -32,6 +32,7 @@ void print_backend_capabilities(const std::string& admission) {
         << " dynamic_ocs_estimated_release=0"
         << " ocs_plan_schema=6"
         << " ocs_independent_plane_schema=7"
+        << " ocs_periodic_unrolled_schema=8"
         << " independent_plane_progress=1"
         << " independent_plane_barrier=plane_configuration_activation"
         << " exact_flow_identity=1"

@@ -28,6 +28,10 @@ struct OcsPlanData {
                  std::vector<std::pair<int,int>> matching;
                  bool force_reconf = false;
                   bool synchronize = false;
+                  // Plan-v8 periodic-unrolled slots remain active for at
+                  // least this duration, even when their segmented flows
+                  // finish earlier. Zero for plan-v6/v7.
+                  double minimum_dwell_ns = 0.0;
                   // 0 = unspecified, 1 = fold (into owners), 2 = unfold
                   int phase = 0; };
     std::vector<Cfg> configurations;
