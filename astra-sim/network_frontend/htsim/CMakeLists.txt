@@ -47,8 +47,11 @@ target_sources(AstraSim_HTSim PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/HTSimMain.cc)
 target_link_libraries(AstraSim_HTSim LINK_PRIVATE AstraSim)
 target_link_libraries(AstraSim_HTSim LINK_PRIVATE Analytical_Congestion_Unaware)
 
-# Add HTSim library
-add_custom_target(htsim COMMAND make WORKING_DIRECTORY ${HTSIM_DIR})
+# Add HTSim library. Only libhtsim.a is linked; the datacenter sources this
+# target needs are compiled above. csg-htsim's `all` also descends into
+# sim/datacenter and sim/tests, whose Makefiles pass an unquoted `pwd` and
+# break on a path containing a space.
+add_custom_target(htsim COMMAND make libhtsim.a WORKING_DIRECTORY ${HTSIM_DIR})
 target_link_libraries(AstraSim_HTSim LINK_PRIVATE ${HTSIM_DIR}/libhtsim.a)
 add_dependencies(AstraSim_HTSim htsim)
 
