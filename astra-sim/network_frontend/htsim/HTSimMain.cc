@@ -18,6 +18,7 @@ LICENSE file in the root directory of this source tree.
 #include <astra-network-analytical/common/NetworkParser.h>
 #include <astra-network-analytical/congestion_unaware/Helper.h>
 #include <remote_memory_backend/analytical/AnalyticalRemoteMemory.hh>
+#include "PanelPoolMemory.hh"
 
 using namespace HTSim;
 
@@ -318,7 +319,11 @@ int main(int argc, char* argv[]) {
         cxxopts::value<std::string>()->default_value("us"))(
         "keep-flows", "Serving mode: keep completed flows' htsim objects instead of "
         "reclaiming them (debugging only; memory grows with every flow)",
-        cxxopts::value<bool>()->default_value("false"));
+        cxxopts::value<bool>()->default_value("false"))(
+        "memory-pool-configuration", "Physical memory pool(s) as fabric devices (JSON from "
+        "compose_fabric.py); pool MEM_LOAD/MEM_STORE nodes become flows, other locations "
+        "keep the analytical remote memory",
+        cxxopts::value<std::string>()->default_value(""));
     cmd_line_parser.parse(argc, argv);
 
     if (std::getenv("ASTRA_CONCURRENT_SENDS") != nullptr) {
@@ -360,6 +365,8 @@ int main(int argc, char* argv[]) {
     const auto proto = cmd_line_parser.get<HTSimProto>("htsim-proto");
     const auto serving = cmd_line_parser.get<bool>("serving");
     const auto keep_flows = cmd_line_parser.get<bool>("keep-flows");
+    const auto memory_pool_configuration =
+        cmd_line_parser.get<std::string>("memory-pool-configuration");
     const auto start_npu_ids = npu_id_list(cmd_line_parser.get<std::vector<int>>("start-npu-ids"));
     const auto end_npu_ids = npu_id_list(cmd_line_parser.get<std::vector<int>>("end-npu-ids"));
 
@@ -414,8 +421,15 @@ int main(int argc, char* argv[]) {
 
     // Create ASTRA-sim related resources
     auto network_apis = std::vector<std::unique_ptr<HTSimNetworkApi>>();
-    const auto memory_api =
+    std::unique_ptr<AstraSim::AstraRemoteMemoryAPI> memory_api =
         std::make_unique<Analytical::AnalyticalRemoteMemory>(remote_memory_configuration);
+    HTSim::PanelPoolMemory* pool_memory = nullptr;
+    if (!memory_pool_configuration.empty()) {
+        auto pool = std::make_unique<HTSim::PanelPoolMemory>(memory_pool_configuration,
+                                                             std::move(memory_api));
+        pool_memory = pool.get();
+        memory_api = std::move(pool);
+    }
     auto systems = std::vector<Sys*>();
 
     auto queues_per_dim = std::vector<int>();
@@ -480,7 +494,8 @@ int main(int argc, char* argv[]) {
         ht.run_forever();
         const int rc = run_serving(ht, systems, npus_count, start_npu_ids, end_npu_ids);
         AstraSim::LoggerFactory::shutdown();
-        ht.finish();
+        if (pool_memory) pool_memory->report(std::cout);
+    ht.finish();
         return rc;
     }
 
@@ -495,6 +510,7 @@ int main(int argc, char* argv[]) {
     // terminate simulation
     AstraSim::LoggerFactory::shutdown();
 
+    if (pool_memory) pool_memory->report(std::cout);
     ht.finish();
     return 0;
 }

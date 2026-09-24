@@ -90,6 +90,12 @@ class HTSimNetworkApi final : public CommonNetworkApi {
     /// topology
     static std::shared_ptr<Topology> topology;
     static unsigned flow_id;
+
+  public:
+    // Next runtime flow id (shared by sim_send and the pool memory backend).
+    static unsigned next_flow_id();
+
+  private:
     static std::shared_ptr<CompletionTracker> completion_tracker;
 
   public:
