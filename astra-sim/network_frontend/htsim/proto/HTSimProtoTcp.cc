@@ -977,6 +977,7 @@ bool HTSimProtoTcp::ocs_defer_for_initial_configuration(
     }
     OcsColdWaiter waiter = {flow, flow_id};
     ocs_cold_waiters.push_back(waiter);
+    if (!HTSimSession::quiet)
     std::cout << "OCS_COLD_FLOW_WAIT"
               << " flow_id=" << flow_id
               << " flow_uid=" << flow.flow_uid
@@ -1602,6 +1603,7 @@ void HTSimProtoTcp::schedule_htsim_event(FlowInfo flow, int flow_id) {
                 HTSim::FlowInfo sf = flow;
                 sf.size = stripe.bytes;
                 sf.flow_uid = stripe.stripe_uid;
+                if (!HTSimSession::quiet)
                 std::cout << "OCS_IDENTITY flow_uid=" << assignment.flow_uid
                           << " stripe_uid=" << stripe.stripe_uid
                           << " plane=" << slot.first
@@ -1616,6 +1618,7 @@ void HTSimProtoTcp::schedule_htsim_event(FlowInfo flow, int flow_id) {
 
         if (assignment.is_direct) {
             ocs_forced_plane = -1;
+            if (!HTSimSession::quiet)
             std::cout << "OCS_IDENTITY flow_uid=" << assignment.flow_uid
                       << " stripe_uid=- plane=-1 round=-1 lookup=exact"
                       << std::endl;
@@ -1627,6 +1630,7 @@ void HTSimProtoTcp::schedule_htsim_event(FlowInfo flow, int flow_id) {
             const int pl = slot.first;
             const int cfgi = slot.second;
             ocs_runtime_stripe_uid[flow_id] = stripe.stripe_uid;
+            if (!HTSimSession::quiet)
             std::cout << "OCS_IDENTITY flow_uid=" << assignment.flow_uid
                       << " stripe_uid=" << stripe.stripe_uid
                       << " plane=" << pl
@@ -1752,6 +1756,7 @@ void HTSimProtoTcp::schedule_htsim_event(FlowInfo flow, int flow_id) {
                 }
                 DynamicWaiter waiter = {flow, flow_id};
                 ocs_dynamic_waiters.push_back(waiter);
+                if (!HTSimSession::quiet)
                 std::cout << "OCS_DYNAMIC_WAIT"
                           << " flow_id=" << flow_id
                           << " src=" << phys_src
@@ -1817,6 +1822,7 @@ void HTSimProtoTcp::schedule_htsim_event(FlowInfo flow, int flow_id) {
                             &ocs_dynamic_initial_activate_cb, activation);
                     }
                 }
+                if (!HTSimSession::quiet)
                 std::cout << "OCS_DYNAMIC_LEASE_ACQUIRE"
                           << " flow_id=" << flow_id
                           << " plane=" << pl

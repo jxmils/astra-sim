@@ -17,8 +17,8 @@ LICENSE file in the root directory of this source tree.
 #include <astra-network-analytical/common/EventQueue.h>
 #include <astra-network-analytical/common/NetworkParser.h>
 #include <astra-network-analytical/congestion_unaware/Helper.h>
-#include <remote_memory_backend/analytical/AnalyticalRemoteMemory.hh>
 #include "PanelPoolMemory.hh"
+#include "PanelRemoteMemory.hh"
 
 using namespace HTSim;
 
@@ -421,8 +421,9 @@ int main(int argc, char* argv[]) {
 
     // Create ASTRA-sim related resources
     auto network_apis = std::vector<std::unique_ptr<HTSimNetworkApi>>();
+    // The panel's copy of the analytical remote memory (see PanelRemoteMemory.hh).
     std::unique_ptr<AstraSim::AstraRemoteMemoryAPI> memory_api =
-        std::make_unique<Analytical::AnalyticalRemoteMemory>(remote_memory_configuration);
+        std::make_unique<HTSim::PanelRemoteMemory>(remote_memory_configuration);
     HTSim::PanelPoolMemory* pool_memory = nullptr;
     if (!memory_pool_configuration.empty()) {
         auto pool = std::make_unique<HTSim::PanelPoolMemory>(memory_pool_configuration,

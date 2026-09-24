@@ -2,6 +2,7 @@
 #include "HTSimSessionImpl.hh"
 #include "HTSimProtoTcp.hh"
 
+#include <cstdlib>
 #include <iostream>
 
 namespace HTSim {
@@ -39,6 +40,9 @@ public:
     // tell "the ASTRA side is waiting on simulated time" apart from "only
     // htsim's periodic samplers are pending".
     static uint64_t pending;
+    // Serving mode: the source frees itself after delivering its callback
+    // (every ASTRA callback used to leave one behind in astra_events).
+    bool self_delete = false;
 
 private:
     EventHandler _msg_handler;
@@ -61,6 +65,8 @@ void AstraEventSrc::doNextEvent() {
     --pending;
     // Run the handler
     _msg_handler(_fun_arg);
+    if (self_delete)
+        delete this;   // nothing references the source after delivery
 }
 
 std::stringstream& operator>> (std::stringstream& is, HTSimProto& proto) {
@@ -267,8 +273,20 @@ HTSimSession::HTSimSession(const HTSim::tm_info* const tm, int argc, char** argv
 void HTSimSession::schedule_astra_event(long double when_ns,
                                         void (*msg_handler)(void* fun_arg),
                                         void* fun_arg) {
+    if (!(when_ns >= 0)) {
+        // A negative delta wraps simulated time (uint64 picoseconds) and
+        // lands an event near 2^64; name it here rather than in the sampler
+        // that trips over it a simulated second later.
+        std::cerr << "HTSimSession::schedule_astra_event: negative delay "
+                  << static_cast<double>(when_ns) << " ns at "
+                  << get_time_ns() << " ns" << std::endl;
+        abort();
+    }
     AstraEventSrc* src = new AstraEventSrc(msg_handler, fun_arg, impl->eventlist);
-    astra_events.push_back(src);
+    if (reclaim)
+        src->self_delete = true;
+    else
+        astra_events.push_back(src);
     impl->eventlist.sourceIsPendingRel(*src, timeFromNs(when_ns));
 }
 
@@ -324,7 +342,10 @@ void HTSimSession::advance_to_ns(double when_ns) {
         return;
     }
     AstraEventSrc* src = new AstraEventSrc(&noop_handler, nullptr, impl->eventlist);
-    astra_events.push_back(src);
+    if (reclaim)
+        src->self_delete = true;
+    else
+        astra_events.push_back(src);
     EventList::sourceIsPending(*src, when);
 }
 
