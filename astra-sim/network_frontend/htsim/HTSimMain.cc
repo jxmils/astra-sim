@@ -185,9 +185,12 @@ int run_serving(HTSimSession& ht,
 
         // Anything else changed the frontend's state: re-ask everyone (the
         // instance's other TP ranks must pick the same batch up, a DP peer
-        // must join the round it opens).
+        // must join the round it opens). The rank's old deadline is consumed
+        // with it: left in place it would keep next_deadline in the past and
+        // make every idle iteration clear the suppression of every rank.
         ++state_gen;
         pass_gen[npu_id] = -1;
+        pass_deadline[npu_id] = 0;
 
         if (line == "exit") {
             return false;
@@ -309,7 +312,10 @@ int main(int argc, char* argv[]) {
         "start-npu-ids", "Serving mode: controller rank of each instance (comma list)",
         cxxopts::value<std::vector<int>>()->default_value("-1"))(
         "end-npu-ids", "Serving mode: last rank of each instance (comma list)",
-        cxxopts::value<std::vector<int>>()->default_value("-1"));
+        cxxopts::value<std::vector<int>>()->default_value("-1"))(
+        "chakra-runtime-unit", "Unit of Chakra COMP node durations [us|ns]; us is the "
+        "upstream ASTRA-sim convention, LLMServingSim writes ns",
+        cxxopts::value<std::string>()->default_value("us"));
     cmd_line_parser.parse(argc, argv);
 
     if (std::getenv("ASTRA_CONCURRENT_SENDS") != nullptr) {
@@ -358,6 +364,18 @@ int main(int argc, char* argv[]) {
     // Must precede Sys construction: it selects the per-iteration report
     // format and keeps a finished graph from retiring its rank.
     AstraSim::Workload::set_serving_mode(serving);
+
+    const auto runtime_unit = cmd_line_parser.get<std::string>("chakra-runtime-unit");
+    if (runtime_unit == "ns") {
+        AstraSim::Workload::set_runtime_unit_ns(true);
+    } else if (runtime_unit == "us") {
+        AstraSim::Workload::set_runtime_unit_ns(false);
+    } else {
+        std::cerr << "[Error] invalid --chakra-runtime-unit value: " << runtime_unit
+                  << " (us|ns)" << std::endl;
+        return 2;
+    }
+    std::cout << "CHAKRA_RUNTIME_UNIT " << runtime_unit << std::endl;
 
     // Generate topology
     const auto network_parser = NetworkParser(network_configuration);
@@ -408,6 +426,13 @@ int main(int argc, char* argv[]) {
             new Sys(i, workload_configuration, comm_group_configuration, system_configuration,
                     memory_api.get(), network_api.get(), npus_count_per_dim, queues_per_dim,
                     injection_scale, comm_scale, rendezvous_protocol);
+
+        // The remote-memory backend completes a request by scheduling on the
+        // issuing rank's Sys, which it looks up by id; without this
+        // registration MEM_LOAD/MEM_STORE nodes never complete. The MICRO
+        // workloads the panel campaigns run have no memory nodes, which is
+        // why this was never exercised here.
+        memory_api->set_sys(i, system);
 
         // push back network and system
         network_apis.push_back(std::move(network_api));

@@ -278,6 +278,16 @@ bool Workload::serving_mode() {
     return serving_mode_;
 }
 
+bool Workload::runtime_unit_ns_ = false;
+
+void Workload::set_runtime_unit_ns(bool ns) {
+    runtime_unit_ns_ = ns;
+}
+
+bool Workload::runtime_unit_ns() {
+    return runtime_unit_ns_;
+}
+
 // Replace the graph and run it as the next iteration. The caller has
 // checked that nothing from the previous graph is still in flight.
 void Workload::start_graph(const string& workload_filename) {
@@ -479,9 +489,10 @@ void Workload::issue_replay(shared_ptr<Chakra::ETFeederNode> node) {
     wlhd->node_id = node->id();
     uint64_t runtime = 1ul;
     if (node->runtime() != 0ul) {
-        // chakra runtimes are in microseconds and we should convert it into
-        // nanoseconds
-        runtime = node->runtime() * 1000;
+        // Chakra runtimes are microseconds by upstream convention and are
+        // converted to nanoseconds; a frontend that writes nanoseconds says
+        // so with --chakra-runtime-unit=ns (see set_runtime_unit_ns).
+        runtime = runtime_unit_ns_ ? node->runtime() : node->runtime() * 1000;
     }
     if (node->is_cpu_op()) {
         hw_resource->tics_cpu_ops += runtime;

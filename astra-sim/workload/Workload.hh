@@ -55,6 +55,12 @@ class Workload : public Callable {
     // serving mode nothing below changes the existing single-graph behaviour.
     static void set_serving_mode(bool enabled);
     static bool serving_mode();
+    // Unit of a Chakra COMP node's `duration_micros` when replayed: upstream
+    // ASTRA-sim reads it as microseconds (the default here, and what every
+    // retained panel workload was produced under); LLMServingSim writes
+    // nanoseconds. Selected explicitly by the frontend, never inferred.
+    static void set_runtime_unit_ns(bool ns);
+    static bool runtime_unit_ns();
     // Queue (or, if this rank is idle, immediately start) the graph
     // `<new_filename>.<rank>.et` on this rank and on every rank in `systems`.
     void add_workload(const std::string& new_filename,
@@ -81,6 +87,7 @@ class Workload : public Callable {
   private:
     void start_graph(const std::string& workload_filename);
     static bool serving_mode_;
+    static bool runtime_unit_ns_;
 };
 
 }  // namespace AstraSim
