@@ -80,6 +80,13 @@ int HTSimNetworkApi::sim_send(void* const buffer,
 
     // save information about event for future
     flow_id++;
+    // Ids at or above 900,000,000 denote OCS stripe sub-flows. Under
+    // reclamation every completed flow's state is released, so ids only
+    // need to be unique among live flows and wrap below that range
+    // (a 64-rank decode step is ~1.5 M flows; 900 M would otherwise be
+    // ~600 steps).
+    if (HTSimSession::reclaim && flow_id >= 900000000)
+        flow_id = 1;
     auto flow_info = FlowInfo(
         src, dst, count, tag, request == nullptr ? "" : request->flow_uid,
         (request == nullptr || request->flow_uid.empty())

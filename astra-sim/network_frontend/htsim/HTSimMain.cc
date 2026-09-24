@@ -315,7 +315,10 @@ int main(int argc, char* argv[]) {
         cxxopts::value<std::vector<int>>()->default_value("-1"))(
         "chakra-runtime-unit", "Unit of Chakra COMP node durations [us|ns]; us is the "
         "upstream ASTRA-sim convention, LLMServingSim writes ns",
-        cxxopts::value<std::string>()->default_value("us"));
+        cxxopts::value<std::string>()->default_value("us"))(
+        "keep-flows", "Serving mode: keep completed flows' htsim objects instead of "
+        "reclaiming them (debugging only; memory grows with every flow)",
+        cxxopts::value<bool>()->default_value("false"));
     cmd_line_parser.parse(argc, argv);
 
     if (std::getenv("ASTRA_CONCURRENT_SENDS") != nullptr) {
@@ -356,6 +359,7 @@ int main(int argc, char* argv[]) {
     const auto rendezvous_protocol = cmd_line_parser.get<bool>("rendezvous-protocol");
     const auto proto = cmd_line_parser.get<HTSimProto>("htsim-proto");
     const auto serving = cmd_line_parser.get<bool>("serving");
+    const auto keep_flows = cmd_line_parser.get<bool>("keep-flows");
     const auto start_npu_ids = npu_id_list(cmd_line_parser.get<std::vector<int>>("start-npu-ids"));
     const auto end_npu_ids = npu_id_list(cmd_line_parser.get<std::vector<int>>("end-npu-ids"));
 
@@ -466,6 +470,13 @@ int main(int argc, char* argv[]) {
     }
 
     if (serving) {
+        // Per-flow stdout lines are debugging output; through the frontend's
+        // pipe they cost more than the simulation. Telemetry printed once at
+        // finish() (NETWORK_ROUTE, OCS_STATS, ...) is unaffected.
+        HTSimSession::set_quiet(true);
+        // A persistent backend must not grow with every flow it simulated.
+        if (!keep_flows)
+            HTSimSession::set_reclaim(true);
         ht.run_forever();
         const int rc = run_serving(ht, systems, npus_count, start_npu_ids, end_npu_ids);
         AstraSim::LoggerFactory::shutdown();

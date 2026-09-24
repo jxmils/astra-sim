@@ -13,6 +13,18 @@ std::map<HTSim::MsgEventKey, HTSim::MsgEvent> HTSimSession::recv_waiting;
 std::map<HTSim::MsgEventKey, int> HTSimSession::msg_standby;
 std::map<int, int> HTSimSession::flow_id_to_tag;
 uint64_t HTSimSession::duplicate_finish_count = 0;
+bool HTSimSession::quiet = false;
+
+void HTSimSession::set_quiet(bool on) {
+    quiet = on;
+    TcpSrc::_quiet_flow_log = on;
+}
+
+bool HTSimSession::reclaim = false;
+
+void HTSimSession::set_reclaim(bool on) {
+    reclaim = on;
+}
 HTSimSession* HTSimSession::session = nullptr;
 HTSimConf HTSimSession::conf;
 
@@ -69,8 +81,9 @@ void HTSimSession::send_flow(FlowInfo flow,
                             void (*msg_handler)(void* fun_arg),
                             void* fun_arg) {
     // Create a MsgEvent instance and register callback function.
-    std::cout << "Send flow " << flow_id << " from " << flow.src << " to " << flow.dst
-              << " with size " << flow.size << "\n";
+    if (!quiet)
+        std::cout << "Send flow " << flow_id << " from " << flow.src << " to " << flow.dst
+                  << " with size " << flow.size << "\n";
     MsgEvent send_event = MsgEvent(flow.src, flow.dst, Dir::Send, flow.size, fun_arg, msg_handler);
     flow_id_to_tag[flow_id] = flow.tag;
     std::pair<MsgEventKey, int> send_event_key = std::make_pair(
@@ -191,6 +204,10 @@ void HTSimSession::flow_finish_send(int src_id, int dst_id, int msg_size, int fl
         // Let receiver knows that it has received packets.
         notify_receiver_receive_data(src_id, dst_id, msg_size, tag, flow_id);
     }
+    // Both directions have consumed the tag by now (the receive side fires
+    // on the last data byte, before the sender's final ack).
+    if (reclaim)
+        flow_id_to_tag.erase(flow_id);
 }
 
 // flow_finish is triggered by HTSim to indicate that a flow has finished.

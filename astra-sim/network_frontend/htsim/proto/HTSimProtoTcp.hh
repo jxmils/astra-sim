@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <deque>
+#include <unordered_map>
 #include <memory>
 #include <map>
 #include <vector>
@@ -298,6 +299,30 @@ class HTSimProtoTcp final : public HTSimSession::HTSimSessionImpl {
         std::vector<int> panel_perm;
         std::vector<int> panel_extents;
         bool panel_nolog = false;   // suppress per-queue loggers ("-nolog")   // per-dim base extents ("-extents 4x8x8")
+        // Flow reclamation ("-reclaim", or HTSimSession::reclaim in serving
+        // mode): a completed flow's endpoints and routes are deleted by the
+        // reaper event once the flow has no packet left in the network
+        // (TcpSrc::live_packets() == 0). Under loss a retransmitted
+        // duplicate can still be in flight at completion; it keeps the
+        // objects alive until it is consumed.
+        struct ReclaimRecord {
+            std::vector<TcpSrc*> srcs;
+            std::vector<TcpSink*> snks;
+            std::vector<Route*> routes;
+            std::vector<MultipathTcpSrc*> mtcps;
+        };
+        class FlowReaper;
+        bool reclaim_opt = false;
+        bool reclaiming() const;
+        std::unordered_map<int, ReclaimRecord> live_flows;   // by runtime flow id
+        std::deque<std::pair<int, ReclaimRecord>> reap_queue;
+        FlowReaper* reaper = nullptr;
+        bool reaper_armed = false;
+        uint64_t reclaimed_flows = 0, reclaim_passes = 0, reclaim_deferrals = 0;
+        void retire_flow(int flow_id);
+    public:
+        void reap_pending();
+    private:
         double direct_preference_factor = 1.10;
         // telemetry: (is_plane, hops) -> {messages, payload_bytes}
         std::map<std::pair<int,int>, std::pair<uint64_t,uint64_t>> route_telemetry;

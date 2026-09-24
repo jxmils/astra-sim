@@ -174,6 +174,19 @@ class HTSimSession {
     // flows whose finish callback fired after their event was already
     // consumed (retransmitted final packet); only possible under loss
     static uint64_t duplicate_finish_count;
+    // Serving mode: suppress the per-flow "Send flow" line and the OCS
+    // per-flow lease telemetry (a 64-rank decode step is ~400k flows and the
+    // frontend reads stdout through a pipe). Default false: unchanged output.
+    static bool quiet;
+    // Sets `quiet` and the matching htsim-side per-flow log switch.
+    static void set_quiet(bool on);
+    // Serving mode: delete a completed flow's htsim objects (TcpSrc, TcpSink,
+    // routes, MultipathTcpSrc) once no packet references them, and release
+    // the session's per-flow bookkeeping. Without it a persistent backend
+    // grows by every flow it ever simulated (~1.5 M flows per 64-rank decode
+    // step). Standalone runs opt in with the htsim option "-reclaim".
+    static bool reclaim;
+    static void set_reclaim(bool on);
 
         static void notify_receiver_receive_data(int src_id,
                                                  int dst_id,

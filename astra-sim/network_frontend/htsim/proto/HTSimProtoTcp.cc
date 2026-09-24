@@ -30,6 +30,74 @@
 #include "main.h"
 
 static FirstFit* ff = NULL;
+
+namespace HTSim {
+
+// Deferred deletion of completed flows: runs after the event in which the
+// flow completed (a TcpSrc must not be deleted inside its own receivePacket).
+class HTSimProtoTcp::FlowReaper : public EventSource {
+public:
+    FlowReaper(EventList& ev, HTSimProtoTcp* owner)
+        : EventSource(ev, "FlowReaper"), owner_(owner) {}
+    void doNextEvent() override { owner_->reap_pending(); }
+private:
+    HTSimProtoTcp* owner_;
+};
+
+bool HTSimProtoTcp::reclaiming() const {
+    return reclaim_opt || HTSimSession::reclaim;
+}
+
+void HTSimProtoTcp::retire_flow(int flow_id) {
+    auto it = live_flows.find(flow_id);
+    if (it == live_flows.end())
+        return;   // logical (stripe master) ids and untracked flows
+    reap_queue.emplace_back(flow_id, std::move(it->second));
+    live_flows.erase(it);
+    if (!reaper_armed) {
+        if (!reaper)
+            reaper = new FlowReaper(eventlist, this);
+        eventlist.sourceIsPendingRel(*reaper, 0);
+        reaper_armed = true;
+    }
+}
+
+void HTSimProtoTcp::reap_pending() {
+    reaper_armed = false;
+    ++reclaim_passes;
+    const size_t n = reap_queue.size();
+    for (size_t k = 0; k < n; ++k) {
+        std::pair<int, ReclaimRecord> rec = std::move(reap_queue.front());
+        reap_queue.pop_front();
+        bool quiescent = true;
+        for (TcpSrc* s : rec.second.srcs) {
+            if (s->live_packets() != 0) { quiescent = false; break; }
+        }
+        if (!quiescent) {
+            reap_queue.push_back(std::move(rec));
+            continue;
+        }
+        for (TcpSrc* s : rec.second.srcs) {
+            if (s->_rtx_timeout_pending)
+                eventlist.cancelPendingSource(*s);
+            tcpRtxScanner->unregisterTcp(*s);
+            delete s;
+        }
+        for (TcpSink* k2 : rec.second.snks) delete k2;
+        for (Route* r : rec.second.routes) delete r;
+        for (MultipathTcpSrc* m : rec.second.mtcps) delete m;
+        ++reclaimed_flows;
+    }
+    if (!reap_queue.empty()) {
+        // A duplicate (retransmitted) packet of a completed flow is still in
+        // the network; try again shortly.
+        ++reclaim_deferrals;
+        eventlist.sourceIsPendingRel(*reaper, timeFromNs(100));
+        reaper_armed = true;
+    }
+}
+
+}  // namespace HTSim
 static size_t subflow_count = 1;
 
 #define USE_FIRST_FIT 0
@@ -116,6 +184,8 @@ HTSimProtoTcp::HTSimProtoTcp(const HTSim::tm_info* const tm, int argc, char** ar
                 std::cerr << "Unknown -permute " << argv[i+1] << std::endl; exit(1);
             }
             i++;
+        } else if (!strcmp(argv[i],"-reclaim")){
+            reclaim_opt = true;
         } else if (!strcmp(argv[i],"-nolog")){
             panel_nolog = true;
         } else if (!strcmp(argv[i],"-extents")){
@@ -1177,6 +1247,11 @@ void HTSimProtoTcp::flow_done(int flow_id) {
     if (ocs_mode && !ocs_plan_mode)
         ocs_release_dynamic_lease(flow_id);
     ocs_flow_cfg.erase(flow_id);
+    if (reclaiming()) {
+        red_flow_dst.erase(flow_id);
+        red_flow_phase.erase(flow_id);
+        retire_flow(flow_id);
+    }
 }
 
 void HTSimProtoTcp::ocs_release_dynamic_lease(int flow_id) {
@@ -1198,6 +1273,7 @@ void HTSimProtoTcp::ocs_release_dynamic_lease(int flow_id) {
     --down;
     ++ocs_dynamic_completed;
     const simtime_picosec complete = eventlist.now();
+    if (!HTSimSession::quiet)
     std::cout << "OCS_DYNAMIC_LEASE_RELEASE"
               << " flow_id=" << flow_id
               << " plane=" << released.plane
@@ -1238,6 +1314,8 @@ void HTSimProtoTcp::stripe_finish_send(int, int, int, int tag) {
     int& st = stripe_sub_state[tag];
     if (st & 1) return;
     st |= 1;
+    if (self->reclaiming())
+        self->retire_flow(tag);
     self->ocs_note_stripe_completed(tag);
     int master = mi->second;
     if (st == 3) { stripe_sub_state.erase(tag); self->stripe_sub2master.erase(mi); }
@@ -1781,6 +1859,13 @@ void HTSimProtoTcp::schedule_htsim_event(FlowInfo flow, int flow_id) {
         mtcp = new MultipathTcpSrc(algo, eventlist, NULL, 1000, false);
     }
 
+    const bool reclaim = reclaiming();
+    if (reclaim && ff) {
+        std::cerr << "RECLAIM_FATAL reason=first_fit_holds_flow_pointers"
+                  << std::endl;
+        exit(2);
+    }
+
     uint32_t it_sub;
     size_t crt_subflow_count = subflow_count;
     tot_subs += crt_subflow_count;
@@ -1817,10 +1902,14 @@ void HTSimProtoTcp::schedule_htsim_event(FlowInfo flow, int flow_id) {
             ? &HTSimProtoTcp::stripe_finish_recv : &HTSimSession::flow_finish_recv;
 
         tcpSrc->setName("mtcp_" + ntoa(src) + "_" + ntoa(inter) + "_" + ntoa(dst));
-        logfile->writeName(*tcpSrc);
+        // The logfile preamble and the sink sampler hold every name/sink
+        // ever registered; reclaimed flows are not recorded there.
+        if (!reclaim)
+            logfile->writeName(*tcpSrc);
 
         tcpSnk->setName("mtcp_sink_" + ntoa(src) + "_" + ntoa(inter) + "_" + ntoa(dst));
-        logfile->writeName(*tcpSnk);
+        if (!reclaim)
+            logfile->writeName(*tcpSnk);
 
         tcpRtxScanner->registerTcp(*tcpSrc);
         size_t choice = 0;
@@ -1897,7 +1986,8 @@ void HTSimProtoTcp::schedule_htsim_event(FlowInfo flow, int flow_id) {
 
         if (inter == 0) {
             mtcp->setName("multipath" + ntoa(src) + "_" + ntoa(dst));
-            logfile->writeName(*mtcp);
+            if (!reclaim)
+                logfile->writeName(*mtcp);
         }
 
         {
@@ -1919,7 +2009,17 @@ void HTSimProtoTcp::schedule_htsim_event(FlowInfo flow, int flow_id) {
         if (ff&&!inter)
             ff->add_flow(src,dst,tcpSrc);
 
-        sinkLogger->monitorMultipathSink(tcpSnk);
+        if (!reclaim) {
+            sinkLogger->monitorMultipathSink(tcpSnk);
+        } else if (flow_id) {
+            ReclaimRecord& rec = live_flows[flow_id];
+            rec.srcs.push_back(tcpSrc);
+            rec.snks.push_back(tcpSnk);
+            rec.routes.push_back(routeout);
+            rec.routes.push_back(routein);
+            if (inter == 0)
+                rec.mtcps.push_back(mtcp);
+        }
     }
     // panel candidate cleanup: candidate Route objects were copied into
     // routeout; free the originals and the vector.
@@ -2024,6 +2124,13 @@ void HTSimProtoTcp::finish() {
     }
     std::cout << "Duplicate flow finishes ignored: "
               << HTSimSession::duplicate_finish_count << std::endl;
+    if (reclaiming()) {
+        std::cout << "Flow reclamation: reclaimed=" << reclaimed_flows
+                  << " live=" << live_flows.size()
+                  << " queued=" << reap_queue.size()
+                  << " passes=" << reclaim_passes
+                  << " deferrals=" << reclaim_deferrals << std::endl;
+    }
     std::cout << "Total TCP retransmissions: " << TcpSrc::_global_rtx_count
               << std::endl;
     if (nocc && TcpSrc::_global_rtx_count > 0) {
