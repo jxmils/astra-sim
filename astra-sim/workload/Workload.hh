@@ -7,8 +7,10 @@ LICENSE file in the root directory of this source tree.
 #define __WORKLOAD_HH__
 
 #include <memory>
+#include <queue>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 #include "astra-sim/system/Callable.hh"
 #include "astra-sim/system/CommunicatorGroup.hh"
@@ -47,6 +49,19 @@ class Workload : public Callable {
     void call(EventType event, CallData* data);
     void fire();
 
+    // Serving mode: the frontend hands this rank one Chakra graph per
+    // iteration over stdin, so a Workload outlives its first graph. Off by
+    // default; the frontend enables it before any Sys is constructed. Outside
+    // serving mode nothing below changes the existing single-graph behaviour.
+    static void set_serving_mode(bool enabled);
+    static bool serving_mode();
+    // Queue (or, if this rank is idle, immediately start) the graph
+    // `<new_filename>.<rank>.et` on this rank and on every rank in `systems`.
+    void add_workload(const std::string& new_filename,
+                      const std::vector<Sys*>& systems);
+    // Mark this rank and every rank in `systems` idle until exit.
+    void sleep_workload(const std::vector<Sys*>& systems);
+
     // stats
     void report();
 
@@ -57,6 +72,15 @@ class Workload : public Callable {
     std::unordered_map<int, uint64_t> collective_comm_node_id_map;
     std::unordered_map<int, DataSet*> collective_comm_wrapper_map;
     bool is_finished;
+    // Serving-mode state. `iteration` counts graphs run on this rank and is
+    // what the per-iteration report carries; `is_sleep` is set by "done".
+    uint32_t iteration;
+    bool is_sleep;
+    std::queue<std::string> pending_workloads;
+
+  private:
+    void start_graph(const std::string& workload_filename);
+    static bool serving_mode_;
 };
 
 }  // namespace AstraSim

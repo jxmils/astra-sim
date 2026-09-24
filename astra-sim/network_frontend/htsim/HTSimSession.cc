@@ -23,10 +23,17 @@ public:
     AstraEventSrc(EventHandler msg_handler, void* fun_arg, EventList& eventList);
     void doNextEvent();
 
+    // Callbacks scheduled but not yet delivered. Serving mode reads this to
+    // tell "the ASTRA side is waiting on simulated time" apart from "only
+    // htsim's periodic samplers are pending".
+    static uint64_t pending;
+
 private:
     EventHandler _msg_handler;
     void* _fun_arg;
 };
+
+uint64_t AstraEventSrc::pending = 0;
 
 // Event source for scheduling callbacks to be executed by HTSim
 std::vector<AstraEventSrc*> astra_events;
@@ -35,9 +42,11 @@ AstraEventSrc::AstraEventSrc(EventHandler msg_handler,
                              void* fun_arg,
                              EventList& eventList)
     : EventSource(eventList, "astraSimSrc"), _msg_handler(msg_handler), _fun_arg(fun_arg) {
+    ++pending;
 }
 
 void AstraEventSrc::doNextEvent() {
+    --pending;
     // Run the handler
     _msg_handler(_fun_arg);
 }
@@ -277,5 +286,47 @@ double HTSimSession::get_time_us() {
 }
 
 HTSimSession::~HTSimSession() {}
+
+} // namespace HTSim
+
+// Serving-mode stepping (HTSimMain --serving).
+
+namespace HTSim {
+
+namespace {
+void noop_handler(void*) {}
+}  // namespace
+
+bool HTSimSession::step() {
+    return impl->step();
+}
+
+void HTSimSession::advance_to_ns(double when_ns) {
+    const simtime_picosec when = timeFromNs(when_ns);
+    if (when <= impl->eventlist.now()) {
+        return;
+    }
+    AstraEventSrc* src = new AstraEventSrc(&noop_handler, nullptr, impl->eventlist);
+    astra_events.push_back(src);
+    EventList::sourceIsPending(*src, when);
+}
+
+} // namespace HTSim
+
+namespace HTSim {
+
+// True when nothing the frontend can observe is in flight: no ASTRA
+// callback is scheduled (compute delays, deferred issues, the advance_to_ns
+// no-op) and no flow is between sim_send and its completion. htsim's own
+// periodic samplers and scanners do not count; they would otherwise keep
+// the event list non-empty until the simulated end time.
+bool HTSimSession::astra_idle() {
+    return AstraEventSrc::pending == 0 && send_waiting.empty() && recv_waiting.empty();
+}
+
+// Serving runs have no fixed simulated end: the frontend's "exit" ends them.
+void HTSimSession::run_forever() {
+    EventList::setEndtime(0);
+}
 
 } // namespace HTSim

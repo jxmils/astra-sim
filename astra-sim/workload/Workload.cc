@@ -264,6 +264,99 @@ Workload::Workload(Sys* sys, string et_filename, string comm_group_filename) {
     this->sys = sys;
     initialize_comm_group(comm_group_filename);
     this->is_finished = false;
+    this->iteration = 0;
+    this->is_sleep = false;
+}
+
+bool Workload::serving_mode_ = false;
+
+void Workload::set_serving_mode(bool enabled) {
+    serving_mode_ = enabled;
+}
+
+bool Workload::serving_mode() {
+    return serving_mode_;
+}
+
+// Replace the graph and run it as the next iteration. The caller has
+// checked that nothing from the previous graph is still in flight.
+void Workload::start_graph(const string& workload_filename) {
+    if (et_feeder != nullptr) {
+        delete et_feeder;
+    }
+    et_feeder = new ETFeeder(workload_filename);
+    iteration++;
+    is_finished = false;
+    fire();
+}
+
+namespace {
+// Serving-mode graphs must exist before they are queued: a missing file
+// would otherwise surface as a rank that never reports, which the frontend
+// reads as a hang. Mirrors the constructor's check.
+bool serving_graph_readable(const string& workload_filename) {
+    if (access(workload_filename.c_str(), R_OK) == 0) {
+        return true;
+    }
+    string error_msg;
+    if (errno == ENOENT) {
+        error_msg = "workload file: " + workload_filename + " does not exist";
+    } else if (errno == EACCES) {
+        error_msg = "workload file: " + workload_filename +
+                    " exists but is not readable";
+    } else {
+        error_msg = "Unknown workload file: " + workload_filename +
+                    " access error";
+    }
+    LoggerFactory::get_logger("workload")->critical(error_msg);
+    return false;
+}
+}  // namespace
+
+void Workload::add_workload(const string& new_filename,
+                            const vector<Sys*>& systems) {
+    // Managed ranks first (a TP group's other ranks), then this rank, so a
+    // collective's peers are all issuing when this rank's graph starts.
+    for (auto* managed_sys : systems) {
+        if (managed_sys == nullptr || managed_sys->workload == nullptr) {
+            LoggerFactory::get_logger("workload")
+                ->critical("Null system or workload while adding workload {}",
+                           new_filename);
+            continue;
+        }
+        Workload* w = managed_sys->workload;
+        string workload_filename =
+            new_filename + "." + to_string(managed_sys->id) + ".et";
+        if (!serving_graph_readable(workload_filename)) {
+            return;
+        }
+        if (w->is_finished && w->pending_workloads.empty()) {
+            w->start_graph(workload_filename);
+        } else {
+            w->pending_workloads.push(workload_filename);
+        }
+    }
+    string workload_filename = new_filename + "." + to_string(sys->id) + ".et";
+    if (!serving_graph_readable(workload_filename)) {
+        return;
+    }
+    if (is_finished && pending_workloads.empty()) {
+        start_graph(workload_filename);
+    } else {
+        pending_workloads.push(workload_filename);
+    }
+}
+
+void Workload::sleep_workload(const vector<Sys*>& systems) {
+    for (auto* managed_sys : systems) {
+        if (managed_sys == nullptr || managed_sys->workload == nullptr) {
+            LoggerFactory::get_logger("workload")
+                ->critical("Null system or workload while sleeping workload");
+            continue;
+        }
+        managed_sys->workload->is_sleep = true;
+    }
+    is_sleep = true;
 }
 
 Workload::~Workload() {
@@ -821,6 +914,21 @@ void Workload::call(EventType event, CallData* data) {
         (hw_resource->num_in_flight_cpu_ops == 0) &&
         (hw_resource->num_in_flight_gpu_comp_ops == 0) &&
         (hw_resource->num_in_flight_gpu_comm_ops == 0)) {
+        if (serving_mode_) {
+            // A graph finished, not the simulation: the serving loop reports
+            // the iteration and asks the frontend what to run next, and
+            // sim_notify_finished must not retire this rank from the
+            // completion tracker (that would end the run once every rank has
+            // finished one graph).
+            if (!pending_workloads.empty()) {
+                string next_workload = pending_workloads.front();
+                pending_workloads.pop();
+                start_graph(next_workload);
+            } else {
+                is_finished = true;
+            }
+            return;
+        }
         report();
         sys->comm_NI->sim_notify_finished();
         is_finished = true;
@@ -833,6 +941,16 @@ void Workload::fire() {
 
 void Workload::report() {
     Tick curr_tick = Sys::boostedTick();
+    if (serving_mode_) {
+        // The line the frontend's Controller parses; unchanged from the
+        // analytical backend. "cycles" are nanoseconds.
+        LoggerFactory::get_logger("workload")
+            ->info("sys[{}] iteration {} finished, {} cycles, exposed "
+                   "communication {} cycles.",
+                   sys->id, iteration, curr_tick,
+                   curr_tick - hw_resource->tics_gpu_ops);
+        return;
+    }
     LoggerFactory::get_logger("workload")
         ->info("sys[{}] finished, {} cycles, exposed communication {} cycles.",
                sys->id, curr_tick, curr_tick - hw_resource->tics_gpu_ops);

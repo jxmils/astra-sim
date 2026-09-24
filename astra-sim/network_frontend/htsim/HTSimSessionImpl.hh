@@ -23,6 +23,10 @@ class HTSimSession::HTSimSessionImpl {
             EventHandler msg_handler, void* fun_arg) = 0;
 
         void stop_simulation();
+
+        // One event-list step; false when nothing is pending. The serving
+        // loop drives the simulation with this instead of run().
+        bool step() { return eventlist.doNextEvent(); }
 };
 
 } // namespace HTSim

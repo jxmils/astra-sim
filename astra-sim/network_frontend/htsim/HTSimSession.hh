@@ -118,6 +118,18 @@ class HTSimSession {
                        void* fun_arg);
         double get_time_ns();
         double get_time_us();
+        // Serving mode (HTSimMain --serving): process one pending event, or
+        // report that the event list is empty.
+        bool step();
+        // Serving mode: let simulated time reach `when_ns` while nothing is in
+        // flight, by scheduling a no-op event there. No effect if `when_ns` is
+        // not in the future.
+        void advance_to_ns(double when_ns);
+        // Serving mode: no ASTRA callback pending and no flow in flight
+        // (htsim's periodic samplers do not count).
+        bool astra_idle();
+        // Serving mode: lift the fixed simulated end time.
+        void run_forever();
         void schedule_astra_event(long double delta, EventHandler msg_handler, void* fun_arg);
         void wait_for_plan_round(
             int64_t round, EventHandler msg_handler, void* fun_arg);
