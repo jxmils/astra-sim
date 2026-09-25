@@ -80,6 +80,7 @@ class HTSimProtoTcp final : public HTSimSession::HTSimSessionImpl {
         // control never engages. FCT is then set by bandwidth, latency and
         // queueing only. Loss under -nocc is a fatal error at finish().
         bool nocc = false;
+        bool tcp_preconnected = false;   // -preconnected: flows skip the SYN round trip
         // Cap on the -nocc window (bytes). 0 = uncapped (cwnd = flow size).
         // A cap >= the per-flow bandwidth-delay product keeps FCT
         // bandwidth-determined while bounding in-flight bytes, which is what

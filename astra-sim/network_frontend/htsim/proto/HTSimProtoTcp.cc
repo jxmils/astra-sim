@@ -252,6 +252,8 @@ HTSimProtoTcp::HTSimProtoTcp(const HTSim::tm_info* const tm, int argc, char** ar
         } else if (!strcmp(argv[i],"-maxwin")){
             nocc_maxwin = (uint64_t)atoll(argv[i+1]);
             i++;
+        } else if (!strcmp(argv[i],"-preconnected")){
+            tcp_preconnected = true;
         } else if (!strcmp(argv[i],"-nocc")){
             nocc = true;
         } else if (!strcmp(argv[i],"-q")){
@@ -1893,6 +1895,7 @@ void HTSimProtoTcp::schedule_htsim_event(FlowInfo flow, int flow_id) {
         tcpSrc->astrasim_flow_finish_send_cb = (flow_id >= 900000000)
             ? &HTSimProtoTcp::stripe_finish_send : &HTSimSession::flow_finish_send;
         tcpSrc->set_flowsize(msg_size);
+        tcpSrc->set_preconnected(tcp_preconnected);
         if (nocc) {
             // Full window from the first RTT: no slow start, and with no drops
             // the AIMD path never executes. mss headroom covers rounding.
