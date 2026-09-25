@@ -189,6 +189,8 @@ Sys::Sys(int id,
     this->priority_counter = 0;
     this->pending_events = 0;
     this->preferred_dataset_splits = 0;
+    this->dataset_split_bytes = 0;
+    this->collective_launch_delay_ns = 0;
     this->all_to_all_xor_destination_order = false;
 
     this->last_scheduled_collective = 0;
@@ -488,6 +490,12 @@ bool Sys::initialize_sys(string name) {
     }
     if (j.contains("preferred-dataset-splits")) {
         preferred_dataset_splits = j["preferred-dataset-splits"];
+    }
+    if (j.contains("dataset-split-bytes")) {
+        dataset_split_bytes = j["dataset-split-bytes"];
+    }
+    if (j.contains("collective-launch-delay-ns")) {
+        collective_launch_delay_ns = j["collective-launch-delay-ns"];
     }
     if (j.contains("peak-perf")) {
         peak_perf = j["peak-perf"];
@@ -1224,13 +1232,27 @@ int Sys::break_dimension(int model_parallel_npu_group) {
 }
 
 uint64_t Sys::determine_chunk_size(uint64_t& size, ComType type) {
-    uint64_t chunk_size = size / preferred_dataset_splits;
+    int splits = preferred_dataset_splits;
+    if (dataset_split_bytes > 0) {
+        // size-dependent: one chunk per dataset_split_bytes, clamped to
+        // [1, preferred_dataset_splits] (the latter now acts as the maximum)
+        uint64_t max_splits = (uint64_t)std::max(preferred_dataset_splits, 1);
+        uint64_t want = (size + dataset_split_bytes - 1) / dataset_split_bytes;
+        if (want < 1) {
+            want = 1;
+        }
+        if (want > max_splits) {
+            want = max_splits;
+        }
+        splits = (int)want;
+    }
+    uint64_t chunk_size = size / splits;
     // We want the collective size to have minimum size, otherwise, there is a
     // possibility of size overflow due to further dividing it to more
     // fine-grained messages
     if (type != ComType::All_Gather && this->total_nodes > chunk_size) {
         chunk_size = this->total_nodes;
-        size = preferred_dataset_splits * chunk_size;
+        size = splits * chunk_size;
     }
     return chunk_size;
 }

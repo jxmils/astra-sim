@@ -287,6 +287,16 @@ class Sys : public Callable {
     int priority_counter;
     uint64_t pending_events;
     int preferred_dataset_splits;
+    // Calibration knobs (system.json), both 0 = off:
+    //   dataset-split-bytes: size-dependent split count, one chunk per this
+    //     many bytes, at most preferred-dataset-splits (NCCL pipelines large
+    //     collectives in fixed-size chunks; a fixed split count over-splits
+    //     small collectives and under-splits large ones);
+    //   collective-launch-delay-ns: fixed cost charged once per collective
+    //     before its first transfer (kernel launch and rank synchronisation,
+    //     the size-independent floor nccl-tests measures at 8 B..8 KiB).
+    uint64_t dataset_split_bytes;
+    uint64_t collective_launch_delay_ns;
     int concurrent_streams;
     int active_first_phase;
     int max_running;

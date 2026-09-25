@@ -539,6 +539,22 @@ void Workload::issue_comp(shared_ptr<Chakra::ETFeederNode> node) {
     }
 }
 
+namespace {
+// Re-enters Workload::issue_comm for a collective once its launch delay has
+// elapsed (see Sys::collective_launch_delay_ns).
+class CollectiveLaunch : public Callable {
+  public:
+    CollectiveLaunch(Workload* w, shared_ptr<Chakra::ETFeederNode> n)
+        : workload(w), node(n) {}
+    void call(EventType, CallData*) override {
+        workload->issue_comm(node);
+        delete this;
+    }
+    Workload* workload;
+    shared_ptr<Chakra::ETFeederNode> node;
+};
+}  // namespace
+
 void Workload::issue_comm(shared_ptr<Chakra::ETFeederNode> node) {
     if (node->type() == ChakraNodeType::COMM_COLL_NODE &&
         node->comm_type() == ChakraCollectiveCommType::BARRIER) {
@@ -558,7 +574,23 @@ void Workload::issue_comm(shared_ptr<Chakra::ETFeederNode> node) {
         return;
     }
 
-    hw_resource->occupy(node);
+    if (node->type() == ChakraNodeType::COMM_COLL_NODE &&
+        sys->collective_launch_delay_ns > 0) {
+        auto it = launched_collectives.find(node->id());
+        if (it == launched_collectives.end()) {
+            // first entry: take the comm resource now (one in-flight comm op
+            // per NPU, as for an immediately issued collective), charge the
+            // launch floor, and come back to generate the transfers
+            hw_resource->occupy(node);
+            launched_collectives.insert(node->id());
+            sys->register_event(new CollectiveLaunch(this, node), EventType::General,
+                                nullptr, (Tick)sys->collective_launch_delay_ns);
+            return;
+        }
+        launched_collectives.erase(it);
+    } else {
+        hw_resource->occupy(node);
+    }
 
     vector<bool> involved_dim;
 

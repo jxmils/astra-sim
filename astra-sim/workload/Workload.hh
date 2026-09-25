@@ -10,6 +10,7 @@ LICENSE file in the root directory of this source tree.
 #include <queue>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "astra-sim/system/Callable.hh"
@@ -39,6 +40,9 @@ class Workload : public Callable {
     void issue_remote_mem(std::shared_ptr<Chakra::ETFeederNode> node);
     void issue_comp(std::shared_ptr<Chakra::ETFeederNode> node);
     void issue_comm(std::shared_ptr<Chakra::ETFeederNode> node);
+    // Collectives whose launch delay (Sys::collective_launch_delay_ns) has
+    // been charged and that re-enter issue_comm to be generated.
+    std::unordered_set<uint64_t> launched_collectives;
     void issue_workload_barrier(
         std::shared_ptr<Chakra::ETFeederNode> node);
     void issue_global_plan_round_barrier(
