@@ -204,6 +204,48 @@ int run_serving(HTSimSession& ht,
         return true;
     };
 
+    // Livelock detector: the loop steps htsim while something ASTRA-visible
+    // is in flight; if nothing in flight changes for 10 s of simulated time
+    // the run is stuck (a flow that never completes, a callback never
+    // delivered) and would otherwise idle through samplers until the clock
+    // wraps. Name what is outstanding and stop.
+    struct InFlight { uint64_t pending; size_t sends; size_t recvs; };
+    InFlight last_seen{HTSimSession::pending_astra_events(),
+                       HTSimSession::send_waiting.size(), HTSimSession::recv_waiting.size()};
+    long long last_change_ns = 0;
+    auto check_livelock = [&]() {
+        InFlight cur{HTSimSession::pending_astra_events(),
+                     HTSimSession::send_waiting.size(), HTSimSession::recv_waiting.size()};
+        if (cur.pending != last_seen.pending || cur.sends != last_seen.sends ||
+            cur.recvs != last_seen.recvs) {
+            last_seen = cur;
+            last_change_ns = now_ns();
+            return;
+        }
+        if (!ht.astra_idle() && now_ns() - last_change_ns > 10000000000LL) {
+            std::cerr << "SERVING_LIVELOCK nothing in flight changed for 10 s of simulated time:"
+                      << " pending_callbacks=" << cur.pending
+                      << " send_waiting=" << cur.sends << " recv_waiting=" << cur.recvs
+                      << " now_ns=" << now_ns() << std::endl;
+            int shown = 0;
+            for (const auto& kv : HTSimSession::send_waiting) {
+                if (shown++ >= 8) break;
+                std::cerr << "  send tag=" << kv.first.first.first << " src=" << kv.first.first.second.first
+                          << " dst=" << kv.first.first.second.second << " flow_id=" << kv.first.second
+                          << " remaining=" << kv.second.remaining_msg_bytes << std::endl;
+            }
+            shown = 0;
+            for (const auto& kv : HTSimSession::recv_waiting) {
+                if (shown++ >= 8) break;
+                std::cerr << "  recv tag=" << kv.first.first << " src=" << kv.first.second.first
+                          << " dst=" << kv.first.second.second
+                          << " remaining=" << kv.second.remaining_msg_bytes << std::endl;
+            }
+            std::cerr.flush();
+            abort();
+        }
+    };
+
     bool exit_requested = false;
     while (!exit_requested) {
         bool asked_any = false;
@@ -228,6 +270,7 @@ int run_serving(HTSimSession& ht,
             }
         } else {
             ht.step();
+            check_livelock();
         }
 
         for (std::size_t idx = 0; idx < end_npu_ids.size() && !exit_requested; ++idx) {

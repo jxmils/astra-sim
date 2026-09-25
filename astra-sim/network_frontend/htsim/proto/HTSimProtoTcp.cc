@@ -1866,6 +1866,8 @@ void HTSimProtoTcp::schedule_htsim_event(FlowInfo flow, int flow_id) {
     }
 
     const bool reclaim = reclaiming();
+    // Serving runs under -nocc must not crawl through retransmit timeouts.
+    TcpSrc::_fatal_rtx_timeout = nocc && HTSimSession::quiet;
     if (reclaim && ff) {
         std::cerr << "RECLAIM_FATAL reason=first_fit_holds_flow_pointers"
                   << std::endl;

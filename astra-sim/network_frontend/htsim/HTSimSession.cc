@@ -362,6 +362,10 @@ bool HTSimSession::astra_idle() {
     return AstraEventSrc::pending == 0 && send_waiting.empty() && recv_waiting.empty();
 }
 
+uint64_t HTSimSession::pending_astra_events() {
+    return AstraEventSrc::pending;
+}
+
 // Serving runs have no fixed simulated end: the frontend's "exit" ends them.
 void HTSimSession::run_forever() {
     EventList::setEndtime(0);

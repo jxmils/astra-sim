@@ -143,6 +143,9 @@ void PanelPoolMemory::issue(uint64_t tensor_size, WorkloadLayerHandlerData* wlhd
                                                        : &PanelPoolMemory::ignore);
     const std::string uid = std::string("pool:") + p.id + ":" + (is_load ? "load:" : "store:")
         + std::to_string(rank) + ":" + std::to_string(wlhd->node_id);
+    std::cerr << "POOL_XFER issue " << (is_load ? "load" : "store") << " pool=" << p.id
+              << " rank=" << rank << " bytes=" << tensor_size << " flow_id=" << flow_id
+              << " tag=" << tag << " node=" << wlhd->node_id << std::endl;
     FlowInfo flow(src, dst, (int)tensor_size, tag, uid, tag);
     HTSimSession::instance().send_flow(flow, flow_id,
                                        is_load ? &PanelPoolMemory::ignore
@@ -154,6 +157,9 @@ void PanelPoolMemory::transfer_done(void* arg) {
     auto* t = static_cast<Transfer*>(arg);
     PanelPoolMemory* self = t->owner;
     --self->pools_[t->pool].in_flight;
+    std::cerr << "POOL_XFER done " << (t->is_load ? "load" : "store") << " pool="
+              << self->pools_[t->pool].id << " rank=" << t->wlhd->sys_id
+              << " bytes=" << t->bytes << " node=" << t->wlhd->node_id << std::endl;
     // Complete the memory node on the issuing rank through its own event
     // queue, exactly as the analytical backend does at the end of its delay.
     Sys* sys = self->sys_.at(t->wlhd->sys_id);

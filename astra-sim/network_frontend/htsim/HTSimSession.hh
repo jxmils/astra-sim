@@ -128,6 +128,8 @@ class HTSimSession {
         // Serving mode: no ASTRA callback pending and no flow in flight
         // (htsim's periodic samplers do not count).
         bool astra_idle();
+        // Serving mode diagnostics: callbacks scheduled but not delivered.
+        static uint64_t pending_astra_events();
         // Serving mode: lift the fixed simulated end time.
         void run_forever();
         void schedule_astra_event(long double delta, EventHandler msg_handler, void* fun_arg);
