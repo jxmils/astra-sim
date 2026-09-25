@@ -360,6 +360,10 @@ int main(int argc, char* argv[]) {
         "chakra-runtime-unit", "Unit of Chakra COMP node durations [us|ns]; us is the "
         "upstream ASTRA-sim convention, LLMServingSim writes ns",
         cxxopts::value<std::string>()->default_value("us"))(
+        "recv-flow-finish", "Complete a receive when the last byte reaches the sink "
+        "rather than when the sender sees the final ACK (one-way instead of a "
+        "round trip per message; how NVLink/PCIe collective kernels behave)",
+        cxxopts::value<bool>()->default_value("false"))(
         "keep-flows", "Serving mode: keep completed flows' htsim objects instead of "
         "reclaiming them (debugging only; memory grows with every flow)",
         cxxopts::value<bool>()->default_value("false"))(
@@ -408,6 +412,9 @@ int main(int argc, char* argv[]) {
     const auto proto = cmd_line_parser.get<HTSimProto>("htsim-proto");
     const auto serving = cmd_line_parser.get<bool>("serving");
     const auto keep_flows = cmd_line_parser.get<bool>("keep-flows");
+    if (cmd_line_parser.get<bool>("recv-flow-finish")) {
+        HTSimSession::set_recv_flow_finish(true);
+    }
     const auto memory_pool_configuration =
         cmd_line_parser.get<std::string>("memory-pool-configuration");
     const auto start_npu_ids = npu_id_list(cmd_line_parser.get<std::vector<int>>("start-npu-ids"));

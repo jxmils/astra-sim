@@ -21,6 +21,10 @@ void HTSimSession::set_quiet(bool on) {
     TcpSrc::_quiet_flow_log = on;
 }
 
+void HTSimSession::set_recv_flow_finish(bool on) {
+    conf.recv_flow_finish = on;
+}
+
 bool HTSimSession::reclaim = false;
 
 void HTSimSession::set_reclaim(bool on) {

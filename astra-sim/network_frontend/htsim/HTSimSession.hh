@@ -182,6 +182,10 @@ class HTSimSession {
     static bool quiet;
     // Sets `quiet` and the matching htsim-side per-flow log switch.
     static void set_quiet(bool on);
+    // Receiver-side completion: a flow counts as received when its last byte
+    // arrives at the sink, not when the sender sees the final ACK (NVLink/PCIe
+    // kernels proceed on data arrival; the ACK leg is a transport artefact).
+    static void set_recv_flow_finish(bool on);
     // Serving mode: delete a completed flow's htsim objects (TcpSrc, TcpSink,
     // routes, MultipathTcpSrc) once no packet references them, and release
     // the session's per-flow bookkeeping. Without it a persistent backend
