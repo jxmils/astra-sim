@@ -50,6 +50,12 @@ void PacketBundle::send_to_NPU() {
 }
 
 void PacketBundle::call(EventType event, CallData* data) {
+    // Per-step protocol latency (calibration knob, 0 = off): charged once per
+    // bundle, i.e. once per ring / all-to-all step, together with the
+    // reduction charge when the step reduces.
+    const uint64_t step_ns =
+        step_latency_charged ? 0 : sys->collective_step_latency(size);
+    step_latency_charged = true;
     if (needs_processing == true) {
         needs_processing = false;
         // this->delay[ns], size[bytes] local_mem_bw[bytes/s]
@@ -58,7 +64,14 @@ void PacketBundle::call(EventType event, CallData* data) {
                       + static_cast<uint64_t>(static_cast<double>(size) /
                                               sys->local_mem_bw * 1e9)  // read
                       + static_cast<uint64_t>(static_cast<double>(size) /
-                                              sys->local_mem_bw * 1e9);  // read
+                                              sys->local_mem_bw * 1e9)  // read
+                      + step_ns;
+        sys->try_register_event(this, EventType::CommProcessingFinished, data,
+                                this->delay);
+        return;
+    }
+    if (step_ns > 0) {
+        this->delay = step_ns;
         sys->try_register_event(this, EventType::CommProcessingFinished, data,
                                 this->delay);
         return;

@@ -297,6 +297,23 @@ class Sys : public Callable {
     //     the size-independent floor nccl-tests measures at 8 B..8 KiB).
     uint64_t dataset_split_bytes;
     uint64_t collective_launch_delay_ns;
+    // Calibration knobs for NCCL's protocol and per-collective efficiency
+    // (system.json), defaults = off:
+    //   collective-step-latency-ns / collective-step-latency-min-bytes: a
+    //     fixed cost charged once per ring/all-to-all step whose chunk is at
+    //     least min-bytes (NCCL switches from LL to the Simple protocol above
+    //     a size and then pays a flag handshake per step; its own tuning model
+    //     carries this as a per-step hardware latency per protocol);
+    //   collective-bw-efficiency: {"all-reduce", "all-gather",
+    //     "reduce-scatter", "all-to-all"} -> fraction of the fabric rate the
+    //     collective achieves (NCCL's plateau bus bandwidth differs by
+    //     collective on one fabric); a step puts msg_size / efficiency bytes
+    //     on the wire. 1.0 = the fabric rate.
+    uint64_t collective_step_latency_ns;
+    uint64_t collective_step_latency_min_bytes;
+    double collective_bw_efficiency[6];
+    uint64_t collective_wire_bytes(ComType type, uint64_t msg_size) const;
+    uint64_t collective_step_latency(uint64_t chunk_bytes) const;
     int concurrent_streams;
     int active_first_phase;
     int max_running;

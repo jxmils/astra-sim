@@ -42,6 +42,8 @@ class PacketBundle : public Callable {
     BaseStream* stream;
     MemBus::Transmition transmition;
     Tick delay;
+    // collective-step-latency charged once for this step (see Sys.hh)
+    bool step_latency_charged = false;
     Tick creation_time;
 };
 

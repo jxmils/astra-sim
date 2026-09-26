@@ -5,6 +5,8 @@ LICENSE file in the root directory of this source tree.
 
 #include "astra-sim/system/Sys.hh"
 
+#include <cmath>
+
 #include <cstdlib>
 #include <iostream>
 
@@ -191,6 +193,11 @@ Sys::Sys(int id,
     this->preferred_dataset_splits = 0;
     this->dataset_split_bytes = 0;
     this->collective_launch_delay_ns = 0;
+    this->collective_step_latency_ns = 0;
+    this->collective_step_latency_min_bytes = 0;
+    for (int i = 0; i < 6; i++) {
+        this->collective_bw_efficiency[i] = 1.0;
+    }
     this->all_to_all_xor_destination_order = false;
 
     this->last_scheduled_collective = 0;
@@ -496,6 +503,31 @@ bool Sys::initialize_sys(string name) {
     }
     if (j.contains("collective-launch-delay-ns")) {
         collective_launch_delay_ns = j["collective-launch-delay-ns"];
+    }
+    if (j.contains("collective-step-latency-ns")) {
+        collective_step_latency_ns = j["collective-step-latency-ns"];
+    }
+    if (j.contains("collective-step-latency-min-bytes")) {
+        collective_step_latency_min_bytes =
+            j["collective-step-latency-min-bytes"];
+    }
+    if (j.contains("collective-bw-efficiency")) {
+        const auto& e = j["collective-bw-efficiency"];
+        const std::pair<const char*, ComType> keys[] = {
+            {"all-reduce", ComType::All_Reduce},
+            {"all-gather", ComType::All_Gather},
+            {"reduce-scatter", ComType::Reduce_Scatter},
+            {"all-to-all", ComType::All_to_All}};
+        for (const auto& k : keys) {
+            if (e.contains(k.first)) {
+                double v = e[k.first];
+                if (!(v > 0.0 && v <= 1.0)) {
+                    sys_panic(std::string("collective-bw-efficiency.") +
+                              k.first + " must be in (0, 1]");
+                }
+                collective_bw_efficiency[static_cast<int>(k.second)] = v;
+            }
+        }
     }
     if (j.contains("peak-perf")) {
         peak_perf = j["peak-perf"];
@@ -1229,6 +1261,22 @@ int Sys::break_dimension(int model_parallel_npu_group) {
 
     break_dimension_done = true;
     return -1;
+}
+
+uint64_t Sys::collective_wire_bytes(ComType type, uint64_t msg_size) const {
+    const double eff = collective_bw_efficiency[static_cast<int>(type)];
+    if (eff >= 1.0) {
+        return msg_size;
+    }
+    return static_cast<uint64_t>(std::ceil(static_cast<double>(msg_size) / eff));
+}
+
+uint64_t Sys::collective_step_latency(uint64_t chunk_bytes) const {
+    if (collective_step_latency_ns == 0 ||
+        chunk_bytes < collective_step_latency_min_bytes) {
+        return 0;
+    }
+    return collective_step_latency_ns;
 }
 
 uint64_t Sys::determine_chunk_size(uint64_t& size, ComType type) {

@@ -221,6 +221,9 @@ bool Ring::ready() {
         return false;
     }
     MyPacket packet = packets.front();
+    // bytes on the wire: msg_size at the collective's efficiency (1.0 = as is)
+    const uint64_t wire_size =
+        stream->owner->collective_wire_bytes(comType, msg_size);
     sim_request snd_req;
     snd_req.srcRank = id;
     snd_req.dstRank = packet.preferred_dest;
@@ -232,7 +235,7 @@ bool Ring::ready() {
     snd_req.flow_uid = make_collective_flow_uid(
         plan_tag, static_cast<uint32_t>(id), stream->plan_flow_step++);
     stream->owner->front_end_sim_send(
-        0, Sys::dummy_data, msg_size, UINT8, packet.preferred_dest,
+        0, Sys::dummy_data, wire_size, UINT8, packet.preferred_dest,
         stream->stream_id, &snd_req, Sys::FrontEndSendRecvType::COLLECTIVE,
         &Sys::handleEvent,
         nullptr);  // stream_id+(packet.preferred_dest*50)
@@ -242,7 +245,7 @@ bool Ring::ready() {
         stream, stream->owner->id, EventType::PacketReceived,
         packet.preferred_vnet, packet.stream_id);
     stream->owner->front_end_sim_recv(
-        0, Sys::dummy_data, msg_size, UINT8, packet.preferred_src,
+        0, Sys::dummy_data, wire_size, UINT8, packet.preferred_src,
         stream->stream_id, &rcv_req, Sys::FrontEndSendRecvType::COLLECTIVE,
         &Sys::handleEvent,
         ehd);  // stream_id+(owner->id*50)
